@@ -1,0 +1,312 @@
+// ═══════════════════════════════════════════════════════════════════
+//  LIVE DRIVERS — the real hardware
+// ═══════════════════════════════════════════════════════════════════
+//  These are the classes you finish when the equipment arrives.
+//  The scanner one is already complete and will work as-is.
+//  The printer/drawer/Yoco ones are written out with the real calls
+//  in place and marked  >>> FINISH THIS  where a device-specific
+//  detail (vendor id, IP, Yoco endpoint) has to be filled in.
+//
+//  You do NOT touch any screen to switch over. Set:
+//      NEXT_PUBLIC_HARDWARE_MODE=live
+// ═══════════════════════════════════════════════════════════════════
+
+import type {
+  BarcodeScanner,
+  CardReader,
+  CashDrawer,
+  ChargeRequest,
+  ChargeResult,
+  RefundRequest,
+  ReaderState,
+  ReceiptData,
+  ReceiptPrinter,
+  PrintResult,
+} from './types';
+
+// ─── 1. SCANNER — this one is DONE ─────────────────────────────────
+// USB barcode scanners emulate a keyboard. They type the digits far
+// faster than a human can (<50ms apart) and finish with Enter.
+// We buffer fast keystrokes and flush on Enter.
+
+export class KeyboardWedgeScanner implements BarcodeScanner {
+  readonly kind = 'scanner' as const;
+  readonly mode = 'live' as const;
+
+  private handlers = new Set<(b: string) => void>();
+  private buffer = '';
+  private lastKeyAt = 0;
+  private bound = false;
+
+  /** Max gap between keystrokes that still counts as "the scanner typing". */
+  private static readonly BURST_MS = 50;
+  private static readonly MIN_LENGTH = 4;
+
+  private bind() {
+    if (this.bound || typeof window === 'undefined') return;
+    this.bound = true;
+
+    window.addEventListener('keydown', (e) => {
+      const now = Date.now();
+
+      // A slow keystroke means a human is typing — throw the buffer away.
+      if (now - this.lastKeyAt > KeyboardWedgeScanner.BURST_MS) this.buffer = '';
+      this.lastKeyAt = now;
+
+      if (e.key === 'Enter') {
+        const code = this.buffer.trim();
+        this.buffer = '';
+        if (code.length >= KeyboardWedgeScanner.MIN_LENGTH) {
+          e.preventDefault(); // don't let it submit a form
+          this.handlers.forEach((h) => h(code));
+        }
+        return;
+      }
+
+      if (e.key.length === 1) this.buffer += e.key;
+    });
+  }
+
+  onScan(handler: (barcode: string) => void) {
+    this.bind();
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  simulate() {
+    /* no-op when live */
+  }
+}
+
+// ─── 2. PRINTER ────────────────────────────────────────────────────
+// Two realistic options for a thermal printer (Epson TM-series,
+// Xprinter, etc). Pick ONE:
+//
+//  (a) NETWORK printer  — printer has its own IP on the shop wifi.
+//      You POST raw ESC/POS bytes to a tiny local print service, or
+//      straight to port 9100. Cleanest for a web app.
+//
+//  (b) BROWSER print    — window.print() against a styled 80mm div.
+//      Zero setup, works today, but the operator sees a print dialog.
+//      Perfectly acceptable for go-live; swap to (a) later.
+//
+// The class below does (b) by default and has (a) sketched out.
+
+export class ThermalPrinter implements ReceiptPrinter {
+  readonly kind = 'printer' as const;
+  readonly mode = 'live' as const;
+
+  constructor(
+    private opts: {
+      /** e.g. http://localhost:8080/print — your local print bridge */
+      bridgeUrl?: string;
+    } = {}
+  ) {}
+
+  async print(receipt: ReceiptData): Promise<PrintResult> {
+    // ─ Option (a): network / bridge ─────────────────────────────
+    if (this.opts.bridgeUrl) {
+      try {
+        const res = await fetch(this.opts.bridgeUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'receipt', receipt }),
+        });
+        if (!res.ok) return { ok: false, error: `Printer responded ${res.status}` };
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
+
+    // ─ Option (b): browser print of the 80mm receipt node ────────
+    // The receipt is already rendered off-screen by <ReceiptSheet/>
+    // with id="receipt-print-root" and an @media print stylesheet.
+    if (typeof window !== 'undefined') {
+      window.print();
+      return { ok: true };
+    }
+    return { ok: false, error: 'No printer transport available' };
+  }
+
+  history() {
+    return [];
+  }
+}
+
+// ─── 3. CASH DRAWER ────────────────────────────────────────────────
+// The drawer is a dumb box with a solenoid, plugged into the RJ11
+// port ON THE PRINTER. You open it by sending the ESC/POS kick
+// sequence to the printer:  ESC p m t1 t2   →  0x1B 0x70 0x00 0x19 0xFA
+//
+// So: the drawer driver needs the printer bridge, not its own device.
+
+export class PrinterKickDrawer implements CashDrawer {
+  readonly kind = 'drawer' as const;
+  readonly mode = 'live' as const;
+  private _open = false;
+
+  constructor(private bridgeUrl: string) {}
+
+  async open(reason: string) {
+    // ESC p 0 25 250 — pin 2, 25ms on, 250ms off
+    const kick = [0x1b, 0x70, 0x00, 0x19, 0xfa];
+    await fetch(this.bridgeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'raw', bytes: kick, reason }),
+    });
+    this._open = true;
+  }
+
+  isOpen() {
+    return this._open;
+  }
+
+  close() {
+    this._open = false;
+  }
+}
+
+// ─── 4. YOCO CARD READER ───────────────────────────────────────────
+//
+//  IMPORTANT — how Yoco actually works, because this trips everyone up:
+//
+//  Your SECRET key must never reach the browser. So the flow is:
+//
+//    browser  ──POST /api/payments/charge──▶  your Next.js route
+//                                              │ (has YOCO_SECRET_KEY)
+//                                              ▼
+//                                          Yoco API
+//                                              │
+//                                              ▼
+//                                    the card machine beeps
+//
+//  Then you POLL your own route until the customer has tapped.
+//  This class does exactly that — the polling loop is real; you only
+//  fill in the endpoint names Yoco gives you for your account type
+//  (Yoco has more than one product line: the online Payments API and
+//  the in-person/terminal API — confirm which one your machine uses
+//  in the Yoco developer portal before wiring this up).
+
+export class YocoCardReader implements CardReader {
+  readonly kind = 'reader' as const;
+  readonly mode = 'live' as const;
+
+  private stateHandlers = new Set<(s: ReaderState) => void>();
+  private currentId: string | null = null;
+  private cancelled = false;
+
+  onState(handler: (s: ReaderState) => void) {
+    this.stateHandlers.add(handler);
+    return () => this.stateHandlers.delete(handler);
+  }
+
+  private emit(s: ReaderState) {
+    this.stateHandlers.forEach((h) => h(s));
+  }
+
+  async charge(req: ChargeRequest): Promise<ChargeResult> {
+    this.cancelled = false;
+    this.emit({ phase: 'connecting' });
+
+    try {
+      // 1. Ask OUR server to start a charge on the terminal.
+      const start = await fetch('/api/payments/charge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: req.amount, reference: req.reference }),
+      });
+
+      if (!start.ok) {
+        const result: ChargeResult = { status: 'error', message: `Gateway ${start.status}` };
+        this.emit({ phase: 'done', result });
+        return result;
+      }
+
+      const { paymentId } = (await start.json()) as { paymentId: string };
+      this.currentId = paymentId;
+
+      // 2. Machine is now lit up. Customer taps.
+      this.emit({ phase: 'waiting_for_card', amount: req.amount });
+
+      // 3. Poll until it resolves. 90s is a sane counter timeout.
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        if (this.cancelled) break;
+        await new Promise((r) => setTimeout(r, 1200));
+
+        const poll = await fetch(`/api/payments/charge?id=${paymentId}`);
+        const data = (await poll.json()) as { status: string; result?: ChargeResult };
+
+        if (data.status === 'reading') this.emit({ phase: 'reading' });
+        if (data.status === 'authorising') this.emit({ phase: 'authorising' });
+
+        if (data.status === 'settled' && data.result) {
+          this.emit({ phase: 'done', result: data.result });
+          this.currentId = null;
+          return data.result;
+        }
+        if (data.status === 'failed') {
+          const result: ChargeResult = data.result ?? { status: 'declined' };
+          this.emit({ phase: 'done', result });
+          this.currentId = null;
+          return result;
+        }
+      }
+
+      const timeout: ChargeResult = {
+        status: this.cancelled ? 'cancelled' : 'error',
+        message: this.cancelled ? 'Cancelled at till' : 'Timed out waiting for card',
+      };
+      this.emit({ phase: 'done', result: timeout });
+      return timeout;
+    } catch (e) {
+      const result: ChargeResult = { status: 'error', message: (e as Error).message };
+      this.emit({ phase: 'done', result });
+      return result;
+    }
+  }
+
+  async refund(req: RefundRequest): Promise<ChargeResult> {
+    this.emit({ phase: 'connecting' });
+    try {
+      const res = await fetch('/api/payments/refund', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: req.amount,
+          reference: req.reference,
+          originalReference: req.originalReference,
+        }),
+      });
+      this.emit({ phase: 'authorising' });
+      const data = (await res.json()) as { result?: ChargeResult; error?: string };
+      const result: ChargeResult =
+        res.ok && data.result
+          ? data.result
+          : { status: 'error', message: data.error ?? `Gateway ${res.status}` };
+      this.emit({ phase: 'done', result });
+      return result;
+    } catch (e) {
+      const result: ChargeResult = { status: 'error', message: (e as Error).message };
+      this.emit({ phase: 'done', result });
+      return result;
+    }
+  }
+
+  async cancel() {
+    this.cancelled = true;
+    if (this.currentId) {
+      await fetch('/api/payments/charge', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: this.currentId }),
+      }).catch(() => {});
+    }
+  }
+
+  simulateOutcome() {
+    /* no-op when live */
+  }
+}
