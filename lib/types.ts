@@ -123,6 +123,13 @@ export interface Sale {
   /** Captured at checkout only to send the receipt. Not an account.
    *  POPIA: one stated purpose, no profile built, no marketing. */
   customer_email?: string | null;
+  /** Normalised cellphone, when the shopper is on loyalty. Still not
+   *  an account — a key to a points balance, and the receipt. */
+  customer_phone?: string | null;
+  loyalty_member_id?: string | null;
+  /** Snapshotted so a receipt reprinted next year still tells the
+   *  truth about what that sale earned. */
+  points_earned?: number;
   lines: CartLine[];
   payments: PaymentPart[];
   subtotal: number;
@@ -521,4 +528,208 @@ export const ADJUST_REASONS = [
 export function deliveryAccuracy(d: Delivery): 'exact' | 'short' | 'over' {
   if (d.discrepancy_units === 0) return 'exact';
   return d.discrepancy_units > 0 ? 'short' : 'over';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STOCK ALERTS
+//
+// The Overview already recomputes "N below reorder level" every time
+// it renders. That is a dashboard, not an alert — it only exists
+// while somebody is looking at it, and the person who needs to see it
+// (the stock controller) does not live on that screen.
+//
+// So a crossing is now an EVENT. The moment a movement takes a
+// product from above its threshold to at or below it, one row is
+// written, addressed to the roles that can act on it, and it stays
+// unread until somebody reads it. Crossing back up resolves it, so a
+// product that is reordered stops nagging without anyone dismissing
+// anything.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * The shop-wide floor. A product is low when it is at or below its own
+ * reorder_level OR at or below this — whichever bites first — so a
+ * fast mover with a reorder level of 8 still raises its hand at 20.
+ */
+export const DEFAULT_LOW_STOCK_THRESHOLD = 20;
+
+export type AlertKind = 'low_stock' | 'out_of_stock';
+
+export interface StockAlert {
+  id: string;
+  kind: AlertKind;
+  product_id: string;
+  sku: string;
+  name: string;
+  variant: string;
+  /** Stock at the moment it crossed. */
+  level: number;
+  threshold: number;
+  /** What moved it — a sale number, a write-off reference. */
+  trigger: string;
+  /** Who should see this. Everyone else's bell stays quiet. */
+  roles: Role[];
+  created_at: string;
+  /** Staff ids that have opened the bell since this arrived. */
+  read_by: string[];
+  /** Set when stock came back above the line. Kept for history. */
+  resolved_at?: string | null;
+  synced: boolean;
+}
+
+/** Roles that get told when the shelf runs low. */
+export const STOCK_ALERT_ROLES: Role[] = ['stock_controller', 'manager', 'admin'];
+
+/** The line a product must stay above. */
+export function alertThreshold(p: Product, floor: number): number {
+  return Math.max(p.reorder_level, floor);
+}
+
+export function isUnread(a: StockAlert, staffId: string): boolean {
+  return !a.resolved_at && !a.read_by.includes(staffId);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOYALTY
+//
+// Still no customer accounts — nobody registers, nobody sets a
+// password, nobody is profiled. What exists is a CELLPHONE NUMBER and
+// a points balance against it, because that is the whole transaction
+// a shopper is willing to make at a counter with a queue behind them.
+//
+// Points turn into the voucher instrument that already exists, rather
+// than a second kind of money:
+//
+//     spend → points → voucher (CreditNote) → spend
+//
+// That matters. Vouchers already have a code, an expiry, part-spend,
+// a liability report and a redemption path at the till. Inventing
+// "points tender" would have meant building all of that twice.
+//
+// POPIA: a phone number is personal information. It is captured for
+// two stated purposes — the receipt and the points — and for nothing
+// else. No marketing without a separate opt-in, which is why consent
+// is a column and not an assumption.
+// ═══════════════════════════════════════════════════════════════════
+
+/** R10 spent = 1 point. Round numbers a cashier can explain. */
+export const RAND_PER_POINT = 10;
+/** 100 points = R50 off. A 5% effective return, funded by margin. */
+export const POINTS_PER_VOUCHER = 100;
+export const VOUCHER_RAND_PER_REDEMPTION = 50;
+
+export interface LoyaltyMember {
+  id: string;
+  /** Normalised to 27XXXXXXXXX. The key customers are identified by. */
+  phone: string;
+  /** Optional — asked once, never required to earn. */
+  name?: string | null;
+  points: number;
+  /** Every cent ever spent. Drives tiers later if the shop wants them. */
+  lifetime_spend: number;
+  /** Separate, explicit, and off by default. POPIA s69. */
+  marketing_opt_in: boolean;
+  joined_at: string;
+  last_seen_at: string;
+  synced: boolean;
+}
+
+export type LoyaltyReason = 'earn' | 'redeem' | 'refund' | 'adjust';
+
+/**
+ * A points ledger, for the same reason stock has one: a balance you
+ * cannot explain is a balance a customer will argue with.
+ */
+export interface LoyaltyTxn {
+  id: string;
+  member_id: string;
+  phone: string;
+  /** Signed. Negative when points are spent or clawed back. */
+  points: number;
+  balance_after: number;
+  reason: LoyaltyReason;
+  /** Sale number, refund number, or voucher code. */
+  reference: string;
+  staff_id: string;
+  staff_name: string;
+  created_at: string;
+  synced: boolean;
+}
+
+export function pointsFor(totalCents: number): number {
+  return Math.max(0, Math.floor(totalCents / (RAND_PER_POINT * 100)));
+}
+
+/** How many whole vouchers a balance is worth right now. */
+export function redeemableVouchers(points: number): number {
+  return Math.floor(points / POINTS_PER_VOUCHER);
+}
+
+/**
+ * South African mobile numbers, typed by a cashier in a hurry:
+ * 0821234567, 082 123 4567, +27 82 123 4567, 27821234567 — all the
+ * same person. Stored as 27XXXXXXXXX so the lookup never misses.
+ */
+export function normalisePhone(input: string): string {
+  const digits = input.replace(/\D/g, '');
+  if (digits.startsWith('27') && digits.length === 11) return digits;
+  if (digits.startsWith('0') && digits.length === 10) return '27' + digits.slice(1);
+  if (digits.length === 9) return '27' + digits; // typed without the 0
+  return digits;
+}
+
+export function isValidPhone(input: string): boolean {
+  const n = normalisePhone(input);
+  // 27 + a mobile prefix (6,7,8) + 8 digits.
+  return /^27[6-8]\d{8}$/.test(n);
+}
+
+/** 082 123 4567 — how a South African reads their own number back. */
+export function formatPhone(stored: string): string {
+  const n = normalisePhone(stored);
+  if (!/^27\d{9}$/.test(n)) return stored;
+  const local = '0' + n.slice(2);
+  return `${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6)}`;
+}
+
+/** Hides the middle. For anything a third party might read. */
+export function maskPhone(stored: string): string {
+  const f = formatPhone(stored);
+  return f.length > 6 ? f.slice(0, 4) + '••• ' + f.slice(-4) : f;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGN-IN LOG
+//
+// Till sessions record who had the drawer. They say nothing about who
+// was in the back office reading cost prices at 22:40, or who signed
+// in to a till and rang up nothing at all.
+// ═══════════════════════════════════════════════════════════════════
+
+export interface LoginEvent {
+  id: string;
+  staff_id: string;
+  staff_name: string;
+  role: Role;
+  surface: Surface;
+  /** Till sign-ins only. */
+  till_id?: string | null;
+  till_name?: string | null;
+  signed_in_at: string;
+  signed_out_at?: string | null;
+  /** How the session ended, when it did. */
+  ended: 'signed_out' | 'still_active';
+  synced: boolean;
+}
+
+export function sessionMinutes(e: LoginEvent, now = Date.now()): number {
+  const end = e.signed_out_at ? new Date(e.signed_out_at).getTime() : now;
+  return Math.max(0, Math.round((end - new Date(e.signed_in_at).getTime()) / 60_000));
+}
+
+export function humanDuration(mins: number): string {
+  if (mins < 1) return 'under a minute';
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  return `${h}h ${String(mins % 60).padStart(2, '0')}m`;
 }

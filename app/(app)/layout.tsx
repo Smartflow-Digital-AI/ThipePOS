@@ -6,10 +6,12 @@ import Link from 'next/link';
 import {
   ScanLine, LayoutDashboard, Package, Boxes, Receipt,
   BarChart3, Settings, LogOut, Wifi, WifiOff, CloudUpload, Sparkles, RotateCcw, Ticket, ShieldCheck,
+  HeartHandshake,
 } from 'lucide-react';
 import { usePos } from '@/lib/store';
 import { startSync } from '@/lib/supabase/sync';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { AlertBell } from '@/components/ui/AlertBell';
 import type { Role, Surface } from '@/lib/types';
 import { STORE, TILLS } from '@/lib/data/seed';
 
@@ -33,6 +35,7 @@ const NAV: {
   { href: '/products',  label: 'Products',  icon: Package,         surface: 'office', roles: ['stock_controller', 'manager', 'admin'] },
   { href: '/stock',     label: 'Stock',     icon: Boxes,           surface: 'office', roles: ['stock_controller', 'manager', 'admin'] },
   { href: '/vouchers',  label: 'Vouchers',  icon: Ticket,          surface: 'office', roles: ['manager', 'admin'] },
+  { href: '/loyalty',   label: 'Loyalty',   icon: HeartHandshake,  surface: 'office', roles: ['manager', 'admin'] },
   { href: '/reports',   label: 'Reports',   icon: BarChart3,       surface: 'office', roles: ['manager', 'admin'] },
   { href: '/audit',     label: 'Audit',     icon: ShieldCheck,     surface: 'office', roles: ['manager', 'admin'] },
   { href: '/settings',  label: 'Settings',  icon: Settings,        surface: 'office', roles: ['admin'] },
@@ -177,6 +180,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               {online ? <Wifi size={12} /> : <WifiOff size={12} />}
               <span className="hidden md:inline">{online ? 'Online' : 'Offline'}</span>
             </span>
+
+            {/* Stock alerts follow the person, not the screen. */}
+            {surface === 'office' && <AlertBell />}
 
             <ThemeToggle compact />
 

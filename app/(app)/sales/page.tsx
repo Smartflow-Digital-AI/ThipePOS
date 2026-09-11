@@ -23,6 +23,10 @@ export default function SalesPage() {
   const cashTaken = t?.cashIn ?? 0;
   const cardTaken = t?.cardIn ?? 0;
   const cashRefunded = t?.cashOut ?? 0;
+  const sessionCount = t?.saleCount ?? 0;
+  const refundCount = session
+    ? refunds.filter((r) => r.till_session_id === session.id).length
+    : 0;
 
   const isOpen = session?.status === 'open';
 
@@ -52,27 +56,36 @@ export default function SalesPage() {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 text-sm">
-            <Cell label="Opening float" value={money(session.opening_float)} />
-            <Cell label="Cash sales" value={money(cashTaken)} />
-            <Cell label="Card sales" value={money(cardTaken)} />
-            <Cell label="Cash refunds" value={cashRefunded ? '-' + money(cashRefunded) : money(0)} />
-            <Cell
-              label={isOpen ? 'Cash expected' : 'Variance'}
-              value={
-                isOpen
-                  ? money(session.opening_float + cashTaken - cashRefunded)
-                  : money(session.variance ?? 0)
-              }
-              tone={
-                !isOpen && session.variance
-                  ? session.variance < 0
-                    ? 'bad'
-                    : 'warn'
-                  : undefined
-              }
-            />
-          </div>
+          {/* While the shift is OPEN the cashier sees no cash figures.
+              A blind count is only blind if the number cannot be
+              reconstructed from the screen next door — float plus cash
+              sales IS the expected total. See components/pos/CloseTill. */}
+          {isOpen ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+              <Cell label="Sales this shift" value={String(sessionCount)} />
+              <Cell label="Card sales" value={money(cardTaken)} />
+              <Cell label="Cash in drawer" value="Counted at cash-up" muted />
+              <Cell label="Cash refunds" value={cashRefunded ? String(refundCount) : '0'} muted />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 text-sm">
+              <Cell label="Opening float" value={money(session.opening_float)} />
+              <Cell label="Cash sales" value={money(cashTaken)} />
+              <Cell label="Card sales" value={money(cardTaken)} />
+              <Cell label="Cash refunds" value={cashRefunded ? '-' + money(cashRefunded) : money(0)} />
+              <Cell
+                label="Variance"
+                value={money(session.variance ?? 0)}
+                tone={
+                  session.variance
+                    ? session.variance < 0
+                      ? 'bad'
+                      : 'warn'
+                    : undefined
+                }
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -170,15 +183,15 @@ export default function SalesPage() {
 }
 
 function Cell({
-  label, value, tone,
+  label, value, tone, muted,
 }: {
-  label: string; value: string; tone?: 'ok' | 'warn' | 'bad';
+  label: string; value: string; tone?: 'ok' | 'warn' | 'bad'; muted?: boolean;
 }) {
   const c = tone === 'bad' ? 'text-bad' : tone === 'warn' ? 'text-warn' : tone === 'ok' ? 'text-ok' : '';
   return (
     <div>
       <div className="text-2xs uppercase tracking-wider text-dim mb-1">{label}</div>
-      <div className={`num font-medium ${c}`}>{value}</div>
+      <div className={muted ? 'text-2xs text-faint' : `num font-medium ${c}`}>{value}</div>
     </div>
   );
 }

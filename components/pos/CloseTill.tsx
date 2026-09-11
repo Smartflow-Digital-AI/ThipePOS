@@ -14,6 +14,20 @@
 // the Sales header. One implementation of "what should be in the
 // drawer" — the moment there are two, the shop starts arguing with
 // its own software.
+//
+// ── BLIND COUNT ────────────────────────────────────────────────────
+//
+// The cashier is NOT shown what the system expects before they count.
+//
+// This is not a UI preference, it is the control itself. Show the
+// expected figure first and a drawer that is R200 short gets counted
+// as R200 short — not dishonestly, just human: you count to the
+// number you were given, recount until you reach it, and stop. Every
+// variance quietly disappears and the shop congratulates itself on a
+// perfect record it never actually had.
+//
+// Count first. The system reveals what it expected, and the gap,
+// afterwards — when it is too late to aim at it.
 // ═══════════════════════════════════════════════════════════════════
 
 import { useRef, useState } from 'react';
@@ -77,16 +91,15 @@ export function CloseTillButton({
         <div className="p-5">
           {!result && session && t ? (
             <>
-              <div className="space-y-2 text-sm mb-5">
-                <Row label="Opening float" value={money(session.opening_float)} />
-                <Row label="Cash sales" value={money(t.cashIn)} />
-                {t.cashOut > 0 && (
-                  <Row label="Cash refunds paid out" value={'-' + money(t.cashOut)} bad />
-                )}
-                <div className="flex justify-between font-medium pt-2 border-t border-line">
-                  <span>System expects</span>
-                  <span className="num">{money(t.expected)}</span>
-                </div>
+              {/* Deliberately no expected figure here. See the note at
+                  the top of this file — showing it first is how a shop
+                  ends up with a perfect variance record and a leak. */}
+              <div className="rounded-lg bg-raised border border-line px-3.5 py-3 mb-5">
+                <div className="text-sm font-medium mb-1">Count the drawer first</div>
+                <p className="text-2xs text-dim leading-relaxed">
+                  Notes and coins, including the opening float. The system works
+                  out what it should be once you have entered your count.
+                </p>
               </div>
 
               <MoneyInput
@@ -125,8 +138,21 @@ export function CloseTillButton({
               >
                 {result.variance === 0 ? 'Balanced' : money(result.variance)}
               </div>
-              <div className="text-sm text-dim mb-6">
-                Expected {money(result.expected)} · counted {money(result.counted)}
+              {/* Now the breakdown — after the count is locked in. */}
+              <div className="rounded-lg bg-raised border border-line px-3.5 py-3 mb-5 text-left">
+                <Row label="Opening float" value={money(session?.opening_float ?? 0)} />
+                <Row label="Cash sales" value={money(t?.cashIn ?? 0)} />
+                {(t?.cashOut ?? 0) > 0 && (
+                  <Row label="Cash refunds paid out" value={'-' + money(t!.cashOut)} bad />
+                )}
+                <div className="flex justify-between font-medium pt-2 mt-2 border-t border-line text-sm">
+                  <span>System expected</span>
+                  <span className="num">{money(result.expected)}</span>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span className="text-dim">You counted</span>
+                  <span className="num">{money(result.counted)}</span>
+                </div>
               </div>
               {result.variance !== 0 && (
                 <p className="text-sm text-dim mb-6">

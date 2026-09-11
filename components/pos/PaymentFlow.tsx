@@ -246,6 +246,11 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
     cash_received: s.cash_received,
     change_given: s.change_given,
     customer_email: s.customer_email,
+    customer_phone: s.customer_phone,
+    points_earned: s.points_earned,
+    points_balance: s.loyalty_member_id
+      ? usePos.getState().loyaltyMembers.find((m) => m.id === s.loyalty_member_id)?.points
+      : undefined,
   });
 
   // A voucher is spent FIRST, then whatever is left is settled in cash

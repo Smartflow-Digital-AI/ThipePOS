@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Search, ScanLine, Plus, Minus, Trash2, Mail, X, Lock,
+  Search, ScanLine, Plus, Minus, Trash2, X, Lock,
   ShoppingCart, AlertTriangle, ChevronRight,
 } from 'lucide-react';
 import { usePos } from '@/lib/store';
@@ -13,13 +13,13 @@ import { PaymentFlow } from '@/components/pos/PaymentFlow';
 import { Modal } from '@/components/ui/Modal';
 import { MoneyInput } from '@/components/ui/MoneyInput';
 import { CloseTillButton } from '@/components/pos/CloseTill';
+import { LoyaltyCapture } from '@/components/pos/LoyaltyCapture';
 
 export default function TillPage() {
   const products = usePos((s) => s.products);
   const cart = usePos((s) => s.cart);
   const session = usePos((s) => s.session);
-  const saleEmail = usePos((s) => s.saleEmail);
-  const { addProduct, addByBarcode, setQty, removeLine, clearCart, setSaleEmail, openTill } = usePos();
+  const { addProduct, addByBarcode, setQty, removeLine, clearCart, openTill } = usePos();
 
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All');
@@ -141,30 +141,9 @@ export default function TillPage() {
   // ── The sale panel, shared by the desktop aside and the tablet sheet
   const cartPanel = (
     <>
-      {/* No accounts, no loyalty — just somewhere to send the slip.
-          POPIA: one purpose, stated on screen, nothing else kept. */}
-      <div className="flex-none px-4 py-3 border-b border-line">
-        <div className="relative">
-          <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-          <input
-            type="email"
-            inputMode="email"
-            className="input pl-9 h-10"
-            placeholder="Email receipt (optional)"
-            value={saleEmail}
-            onChange={(e) => setSaleEmail(e.target.value)}
-          />
-          {saleEmail && (
-            <button
-              onClick={() => setSaleEmail('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-faint hover:text-ink"
-              aria-label="Clear email"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
-      </div>
+      {/* Still no accounts — a phone number, a points balance, and a
+          receipt. See components/pos/LoyaltyCapture. */}
+      <LoyaltyCapture cartTotal={totals.total} />
 
       <div className="flex-1 overflow-y-auto scroll min-h-0">
         {cart.length === 0 ? (

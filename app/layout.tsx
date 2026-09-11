@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { themeScript } from '@/lib/theme';
+import { DemoSeeder } from '@/components/DemoSeeder';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -31,7 +32,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Must run before first paint. See lib/theme.ts. */}
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {/* No-op unless this browser is empty. See components/DemoSeeder. */}
+        <DemoSeeder />
+        {children}
+      </body>
     </html>
   );
 }

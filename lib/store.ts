@@ -6,13 +6,18 @@ import type {
   CartLine, PaymentPart, Product, Sale, Staff, TillSession,
   Refund, RefundLine, RefundMethod, Surface, Override, CreditNote,
   StockMovement, MovementType, Delivery, DeliveryLine,
+  StockAlert, LoyaltyMember, LoyaltyTxn, LoyaltyReason, LoginEvent, Role,
 } from '@/lib/types';
 import {
   cartTotals, effectiveUnitPrice, returnableQty,
   TILL_ROLES, OFFICE_ROLES, OVERRIDE_ROLES,
   makeVoucherCode, normaliseVoucherCode, voucherIsUsable, VOUCHER_VALID_YEARS,
+  DEFAULT_LOW_STOCK_THRESHOLD, STOCK_ALERT_ROLES, alertThreshold,
+  normalisePhone, pointsFor, POINTS_PER_VOUCHER, VOUCHER_RAND_PER_REDEMPTION,
 } from '@/lib/types';
 import { PRODUCTS, STORE, TILLS, STAFF } from '@/lib/data/seed';
+import { buildDemo } from '@/lib/data/demo';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 // ═══════════════════════════════════════════════════════════════════
 //  OFFLINE-FIRST BY DESIGN
@@ -126,10 +131,92 @@ interface PosState {
   /** A human corrects the number. Always needs a reason. */
   adjustStock: (product_id: string, delta: number, reason: string) => StockMovement | null;
   unsyncedCount: () => number;
+
+  // ── alerts ──
+  /** Shop-wide low-stock floor. Per-product reorder levels still win
+   *  when they are higher. */
+  lowStockThreshold: number;
+  setLowStockThreshold: (n: number) => void;
+  alerts: StockAlert[];
+  /** Alerts this person should see, newest first. */
+  alertsFor: (role: Role) => StockAlert[];
+  unreadAlerts: (role: Role, staffId: string) => number;
+  markAlertsRead: () => void;
+  markAlertsSynced: (ids: string[]) => void;
+
+  // ── loyalty ──
+  loyaltyMembers: LoyaltyMember[];
+  loyaltyLedger: LoyaltyTxn[];
+  /** Phone typed at the till for the sale in progress. */
+  salePhone: string;
+  setSalePhone: (phone: string) => void;
+  findMember: (phone: string) => LoyaltyMember | null;
+  /** Find or create. Returns null if the number is not a valid mobile. */
+  joinLoyalty: (phone: string, name?: string) => LoyaltyMember | null;
+  setMarketingOptIn: (memberId: string, on: boolean) => void;
+  /** Spend points on a voucher. Returns the voucher, or null. */
+  redeemPoints: (memberId: string) => CreditNote | null;
+  markLoyaltySynced: (ids: string[]) => void;
+
+  // ── who signed in ──
+  logins: LoginEvent[];
+  markLoginsSynced: (ids: string[]) => void;
+
+  // ── demo ──
+  /** True once a demo month has been generated into this browser. */
+  demoSeeded: boolean;
+  /**
+   * Fill an empty browser with a month of trading so the back office
+   * has something to show. Refuses when Supabase is configured — the
+   * moment there is a real backend, fabricated sales are a hazard,
+   * not a convenience. Returns whether it actually seeded.
+   */
+  seedDemo: (force?: boolean) => boolean;
+  /**
+   * Back to a clean shop: seeded products, no history, still signed
+   * in — and it STAYS clean, because clearing is a deliberate act and
+   * the auto-seeder must not quietly refill it on the next reload.
+   */
+  resetAll: () => void;
 }
 
 const nowIso = () => new Date().toISOString();
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ─── The sign-in log ─────────────────────────────────────────
+// Till sessions say who had the drawer. They say nothing about who
+// was in the back office at 22:40 reading cost prices.
+
+function openLogin(who: Staff, surface: Surface, tillId: string | null): LoginEvent {
+  const till = tillId ? TILLS.find((t) => t.id === tillId) : null;
+  return {
+    id: 'lg-' + uid(),
+    staff_id: who.id,
+    staff_name: who.full_name,
+    role: who.role,
+    surface,
+    till_id: surface === 'till' ? (tillId ?? null) : null,
+    till_name: surface === 'till' ? (till?.name ?? null) : null,
+    signed_in_at: nowIso(),
+    signed_out_at: null,
+    ended: 'still_active',
+    synced: false,
+  };
+}
+
+/**
+ * Close anything left open. A browser that is simply closed never
+ * calls logout, so the previous session would otherwise sit "active"
+ * forever and make the log useless. Signing in again is proof the
+ * last one ended.
+ */
+function closeOpenLogins(logins: LoginEvent[]): LoginEvent[] {
+  return logins.map((l) =>
+    l.ended === 'still_active'
+      ? { ...l, signed_out_at: nowIso(), ended: 'signed_out' as const, synced: false }
+      : l
+  );
+}
 
 /**
  * The ONLY place stock levels change.
@@ -187,6 +274,78 @@ function applyMovements(
   return { movements, products: next };
 }
 
+/**
+ * Turn a stock change into alerts.
+ *
+ * Only CROSSINGS count. Selling one unit of something that was
+ * already below the line raises nothing — the alert for that product
+ * is already sitting unread in somebody's bell, and a shop that gets
+ * forty notifications for one low product stops reading notifications.
+ *
+ * Crossing back up resolves the open alert instead of leaving it for
+ * someone to dismiss. Reordering the stock IS the dismissal.
+ */
+function reconcileAlerts(
+  before: Product[],
+  after: Product[],
+  floor: number,
+  trigger: string,
+  existing: StockAlert[]
+): StockAlert[] {
+  let next = existing;
+  const fresh: StockAlert[] = [];
+
+  for (const p of after) {
+    const was = before.find((x) => x.id === p.id);
+    if (!was || was.stock === p.stock) continue;
+
+    const line = alertThreshold(p, floor);
+    const openFor = next.find((a) => a.product_id === p.id && !a.resolved_at);
+
+    // Back above the line — close whatever was open.
+    if (p.stock > line) {
+      if (openFor) {
+        next = next.map((a) =>
+          a.id === openFor.id ? { ...a, resolved_at: nowIso(), synced: false } : a
+        );
+      }
+      continue;
+    }
+
+    const kind = p.stock <= 0 ? 'out_of_stock' : 'low_stock';
+
+    // Already flagged, and it has not got worse in kind. Say nothing.
+    if (openFor && openFor.kind === kind) continue;
+
+    // Low → out is a genuine escalation and deserves its own row, so
+    // resolve the softer one first rather than stacking both.
+    if (openFor) {
+      next = next.map((a) =>
+        a.id === openFor.id ? { ...a, resolved_at: nowIso(), synced: false } : a
+      );
+    }
+
+    fresh.push({
+      id: 'alr-' + uid(),
+      kind,
+      product_id: p.id,
+      sku: p.sku,
+      name: p.name,
+      variant: p.variant,
+      level: p.stock,
+      threshold: line,
+      trigger,
+      roles: STOCK_ALERT_ROLES,
+      created_at: nowIso(),
+      read_by: [],
+      resolved_at: null,
+      synced: false,
+    });
+  }
+
+  return fresh.length ? [...fresh, ...next] : next;
+}
+
 export const usePos = create<PosState>()(
   persist(
     (set, get) => ({
@@ -204,6 +363,214 @@ export const usePos = create<PosState>()(
       deliveries: [],
       cart: [],
       saleEmail: '',
+      salePhone: '',
+      lowStockThreshold: DEFAULT_LOW_STOCK_THRESHOLD,
+      alerts: [],
+      loyaltyMembers: [],
+      loyaltyLedger: [],
+      logins: [],
+      demoSeeded: false,
+
+      // ── ALERTS ───────────────────────────────────────────────
+      setLowStockThreshold: (n) =>
+        set({ lowStockThreshold: Math.max(0, Math.round(n)) }),
+
+      alertsFor: (role) =>
+        get().alerts.filter((a) => a.roles.includes(role)),
+
+      unreadAlerts: (role, staffId) =>
+        get().alerts.filter(
+          (a) => a.roles.includes(role) && !a.resolved_at && !a.read_by.includes(staffId)
+        ).length,
+
+      // Opening the bell marks everything currently addressed to you as
+      // read — for YOU. A manager reading it does not silence the stock
+      // controller's copy, which is the entire point of routing by role.
+      markAlertsRead: () => {
+        const { staff, alerts } = get();
+        if (!staff) return;
+        set({
+          alerts: alerts.map((a) =>
+            a.roles.includes(staff.role) && !a.read_by.includes(staff.id)
+              ? { ...a, read_by: [...a.read_by, staff.id], synced: false }
+              : a
+          ),
+        });
+      },
+
+      markAlertsSynced: (ids) =>
+        set((s) => ({
+          alerts: s.alerts.map((a) => (ids.includes(a.id) ? { ...a, synced: true } : a)),
+        })),
+
+      // ── LOYALTY ──────────────────────────────────────────────
+      setSalePhone: (phone) => set({ salePhone: phone }),
+
+      findMember: (phone) => {
+        const key = normalisePhone(phone);
+        if (!key) return null;
+        return get().loyaltyMembers.find((m) => m.phone === key) ?? null;
+      },
+
+      joinLoyalty: (phone, name) => {
+        const key = normalisePhone(phone);
+        // Guard here as well as in the UI: a member keyed on a broken
+        // number is a member nobody can ever look up again.
+        if (!/^27[6-8]\d{8}$/.test(key)) return null;
+
+        const existing = get().loyaltyMembers.find((m) => m.phone === key);
+        if (existing) {
+          if (name && !existing.name) {
+            const updated = { ...existing, name, synced: false };
+            set((st) => ({
+              loyaltyMembers: st.loyaltyMembers.map((m) => (m.id === existing.id ? updated : m)),
+            }));
+            return updated;
+          }
+          return existing;
+        }
+
+        const member: LoyaltyMember = {
+          id: 'ly-' + uid(),
+          phone: key,
+          name: name ?? null,
+          points: 0,
+          lifetime_spend: 0,
+          marketing_opt_in: false, // POPIA: opting in is a separate act
+          joined_at: nowIso(),
+          last_seen_at: nowIso(),
+          synced: false,
+        };
+        set((st) => ({ loyaltyMembers: [member, ...st.loyaltyMembers] }));
+        return member;
+      },
+
+      setMarketingOptIn: (memberId, on) =>
+        set((st) => ({
+          loyaltyMembers: st.loyaltyMembers.map((m) =>
+            m.id === memberId ? { ...m, marketing_opt_in: on, synced: false } : m
+          ),
+        })),
+
+      redeemPoints: (memberId) => {
+        const { loyaltyMembers, staff } = get();
+        const member = loyaltyMembers.find((m) => m.id === memberId);
+        if (!member || member.points < POINTS_PER_VOUCHER) return null;
+
+        const expires = new Date();
+        expires.setFullYear(expires.getFullYear() + VOUCHER_VALID_YEARS);
+        const amount = VOUCHER_RAND_PER_REDEMPTION * 100;
+
+        const voucher: CreditNote = {
+          id: 'cn-' + uid(),
+          code: makeVoucherCode(),
+          amount,
+          remaining: amount,
+          issued_from_refund: 'LOYALTY',
+          issued_at: nowIso(),
+          expires_at: expires.toISOString(),
+          status: 'active',
+          synced: false,
+        };
+
+        const balance = member.points - POINTS_PER_VOUCHER;
+        const txn: LoyaltyTxn = {
+          id: 'lt-' + uid(),
+          member_id: member.id,
+          phone: member.phone,
+          points: -POINTS_PER_VOUCHER,
+          balance_after: balance,
+          reason: 'redeem',
+          reference: voucher.code,
+          staff_id: staff?.id ?? '',
+          staff_name: staff?.full_name ?? 'Unknown',
+          created_at: nowIso(),
+          synced: false,
+        };
+
+        set((st) => ({
+          creditNotes: [voucher, ...st.creditNotes],
+          loyaltyLedger: [txn, ...st.loyaltyLedger],
+          loyaltyMembers: st.loyaltyMembers.map((m) =>
+            m.id === member.id
+              ? { ...m, points: balance, last_seen_at: nowIso(), synced: false }
+              : m
+          ),
+        }));
+
+        return voucher;
+      },
+
+      markLoyaltySynced: (ids) =>
+        set((s) => ({
+          loyaltyMembers: s.loyaltyMembers.map((m) =>
+            ids.includes(m.id) ? { ...m, synced: true } : m
+          ),
+          loyaltyLedger: s.loyaltyLedger.map((t) =>
+            ids.includes(t.id) ? { ...t, synced: true } : t
+          ),
+        })),
+
+      markLoginsSynced: (ids) =>
+        set((s) => ({
+          logins: s.logins.map((l) => (ids.includes(l.id) ? { ...l, synced: true } : l)),
+        })),
+
+      // ─────────────────────────────────────────────────────────────
+      seedDemo: (force = false) => {
+        // Never fabricate history against a live database.
+        if (isSupabaseConfigured) return false;
+        const st = get();
+        if (!force && (st.demoSeeded || st.sales.length > 0)) return false;
+
+        const d = buildDemo();
+        set({
+          products: d.products,
+          sales: d.sales,
+          refunds: d.refunds,
+          creditNotes: d.creditNotes,
+          sessions: d.sessions,
+          // The live slot stays empty on purpose. Whoever is being
+          // shown the system opens their own till, which is the first
+          // thing a cashier does anyway — while the Overview already
+          // shows a floor with history behind it.
+          session: null,
+          overrides: d.overrides,
+          stockMovements: d.stockMovements,
+          deliveries: d.deliveries,
+          loyaltyMembers: d.loyaltyMembers,
+          loyaltyLedger: d.loyaltyLedger,
+          alerts: d.alerts,
+          logins: d.logins,
+          cart: [],
+          saleEmail: '',
+          salePhone: '',
+          demoSeeded: true,
+        });
+        return true;
+      },
+
+      resetAll: () =>
+        set({
+          products: PRODUCTS.map((p) => ({ ...p })),
+          sales: [],
+          refunds: [],
+          creditNotes: [],
+          stockMovements: [],
+          deliveries: [],
+          sessions: [],
+          session: null,
+          overrides: [],
+          loyaltyMembers: [],
+          loyaltyLedger: [],
+          alerts: [],
+          logins: [],
+          cart: [],
+          saleEmail: '',
+          salePhone: '',
+          // Marks the auto-seeder as having had its turn here.
+          demoSeeded: true,
+        }),
 
       // ─────────────────────────────────────────────────────────────
       tillLogin: (pin) => {
@@ -211,7 +578,11 @@ export const usePos = create<PosState>()(
           (s) => s.pin === pin && s.is_active && TILL_ROLES.includes(s.role)
         );
         if (!found) return null;
-        set({ staff: found, surface: 'till' });
+        set((st) => ({
+          staff: found,
+          surface: 'till',
+          logins: [openLogin(found, 'till', st.tillId), ...closeOpenLogins(st.logins)],
+        }));
         return found;
       },
 
@@ -226,11 +597,23 @@ export const usePos = create<PosState>()(
             s.password !== ''
         );
         if (!found) return null;
-        set({ staff: found, surface: 'office' });
+        set((st) => ({
+          staff: found,
+          surface: 'office',
+          logins: [openLogin(found, 'office', null), ...closeOpenLogins(st.logins)],
+        }));
         return found;
       },
 
-      logout: () => set({ staff: null, surface: null, cart: [], saleEmail: '' }),
+      logout: () =>
+        set((st) => ({
+          staff: null,
+          surface: null,
+          cart: [],
+          saleEmail: '',
+          salePhone: '',
+          logins: closeOpenLogins(st.logins),
+        })),
 
       // The approver never becomes the signed-in user. They lean over,
       // type their PIN, the one action goes through, and the cashier is
@@ -478,15 +861,72 @@ export const usePos = create<PosState>()(
           }))
         );
         const nextProducts = moved.products;
+        const nextAlerts = reconcileAlerts(
+          products, nextProducts, get().lowStockThreshold, sale.sale_number, get().alerts
+        );
 
         void paid;
+
+        // ── Loyalty ──────────────────────────────────────────
+        // Points are earned on what was actually paid for the goods.
+        // A number typed at the till that is not a valid mobile earns
+        // nothing rather than creating a member nobody can look up.
+        const { salePhone, loyaltyMembers, loyaltyLedger } = get();
+        let members = loyaltyMembers;
+        let ledger = loyaltyLedger;
+        const member = salePhone ? get().joinLoyalty(salePhone) : null;
+
+        if (member) {
+          // joinLoyalty may have inserted; re-read before updating.
+          members = get().loyaltyMembers;
+          const earned = pointsFor(sale.total);
+          const balance = member.points + earned;
+          sale.customer_phone = member.phone;
+          sale.loyalty_member_id = member.id;
+          sale.points_earned = earned;
+
+          members = members.map((m) =>
+            m.id === member.id
+              ? {
+                  ...m,
+                  points: balance,
+                  lifetime_spend: m.lifetime_spend + sale.total,
+                  last_seen_at: nowIso(),
+                  synced: false,
+                }
+              : m
+          );
+
+          if (earned > 0) {
+            ledger = [
+              {
+                id: 'lt-' + uid(),
+                member_id: member.id,
+                phone: member.phone,
+                points: earned,
+                balance_after: balance,
+                reason: 'earn' as LoyaltyReason,
+                reference: sale.sale_number,
+                staff_id: staff?.id ?? '',
+                staff_name: staff?.full_name ?? 'Unknown',
+                created_at: nowIso(),
+                synced: false,
+              },
+              ...ledger,
+            ];
+          }
+        }
 
         set((st) => ({
           sales: [sale, ...sales],
           products: nextProducts,
           stockMovements: [...moved.movements, ...st.stockMovements],
+          alerts: nextAlerts,
+          loyaltyMembers: members,
+          loyaltyLedger: ledger,
           cart: [],
           saleEmail: '',
+          salePhone: '',
         }));
 
         return sale;
@@ -602,12 +1042,53 @@ export const usePos = create<PosState>()(
         ]);
         const moved = applyMovements(products, staff, entries);
         const nextProducts = moved.products;
+        const nextAlerts = reconcileAlerts(
+          products, nextProducts, get().lowStockThreshold, refundNumber, get().alerts
+        );
+
+        // Points earned on money that has been given back are points
+        // the shop never owed. Clawed back, never below zero — a
+        // customer must not end a return owing the shop loyalty.
+        let members = get().loyaltyMembers;
+        let ledger = get().loyaltyLedger;
+        const member = sale.loyalty_member_id
+          ? members.find((m) => m.id === sale.loyalty_member_id)
+          : null;
+
+        if (member) {
+          const clawback = Math.min(member.points, pointsFor(total));
+          if (clawback > 0) {
+            const balance = member.points - clawback;
+            members = members.map((m) =>
+              m.id === member.id ? { ...m, points: balance, synced: false } : m
+            );
+            ledger = [
+              {
+                id: 'lt-' + uid(),
+                member_id: member.id,
+                phone: member.phone,
+                points: -clawback,
+                balance_after: balance,
+                reason: 'refund' as LoyaltyReason,
+                reference: refundNumber,
+                staff_id: staff?.id ?? '',
+                staff_name: staff?.full_name ?? 'Unknown',
+                created_at: nowIso(),
+                synced: false,
+              },
+              ...ledger,
+            ];
+          }
+        }
 
         set((st) => ({
           refunds: [refund, ...refunds],
           products: nextProducts,
           stockMovements: [...moved.movements, ...st.stockMovements],
           creditNotes: voucher ? [voucher, ...creditNotes] : creditNotes,
+          alerts: nextAlerts,
+          loyaltyMembers: members,
+          loyaltyLedger: ledger,
         }));
 
         return { refund, voucher };
@@ -689,8 +1170,15 @@ export const usePos = create<PosState>()(
             })
           : moved.products;
 
+        // Receiving is the one movement that RESOLVES alerts: stock
+        // coming back above the line is exactly what the alert asked for.
+        const nextAlerts = reconcileAlerts(
+          products, priced, get().lowStockThreshold, number, get().alerts
+        );
+
         set((st) => ({
           products: priced,
+          alerts: nextAlerts,
           deliveries: [delivery, ...st.deliveries],
           stockMovements: [...moved.movements, ...st.stockMovements],
         }));
@@ -707,9 +1195,14 @@ export const usePos = create<PosState>()(
         ]);
         if (moved.movements.length === 0) return null;
 
+        const nextAlerts = reconcileAlerts(
+          products, moved.products, get().lowStockThreshold, 'Write-off', get().alerts
+        );
+
         set((st) => ({
           products: moved.products,
           stockMovements: [...moved.movements, ...st.stockMovements],
+          alerts: nextAlerts,
         }));
 
         return moved.movements[0];
@@ -724,9 +1217,14 @@ export const usePos = create<PosState>()(
         ]);
         if (moved.movements.length === 0) return null;
 
+        const nextAlerts = reconcileAlerts(
+          products, moved.products, get().lowStockThreshold, 'Manual adjustment', get().alerts
+        );
+
         set((st) => ({
           products: moved.products,
           stockMovements: [...moved.movements, ...st.stockMovements],
+          alerts: nextAlerts,
         }));
 
         return moved.movements[0];
@@ -759,7 +1257,11 @@ export const usePos = create<PosState>()(
         get().overrides.filter((o) => !o.synced).length +
         get().creditNotes.filter((v) => !v.synced).length +
         get().stockMovements.filter((m) => !m.synced).length +
-        get().deliveries.filter((d) => !d.synced).length,
+        get().deliveries.filter((d) => !d.synced).length +
+        get().alerts.filter((a) => !a.synced).length +
+        get().loyaltyMembers.filter((m) => !m.synced).length +
+        get().loyaltyLedger.filter((t) => !t.synced).length +
+        get().logins.filter((l) => !l.synced).length,
     }),
     {
       name: 'beautypos-v1',
@@ -779,6 +1281,13 @@ export const usePos = create<PosState>()(
         deliveries: s.deliveries,
         cart: s.cart,
         saleEmail: s.saleEmail,
+        salePhone: s.salePhone,
+        lowStockThreshold: s.lowStockThreshold,
+        alerts: s.alerts,
+        loyaltyMembers: s.loyaltyMembers,
+        loyaltyLedger: s.loyaltyLedger,
+        logins: s.logins,
+        demoSeeded: s.demoSeeded,
       }),
     }
   )

@@ -224,7 +224,7 @@ export default function OverviewPage() {
           deltaIsPoints
           invertDelta
           tone={cur.returnRate > 5 ? 'warn' : undefined}
-          hint={cur.refundCount ? `${cur.refundCount} returns` : 'none'}
+          hint={cur.refundCount ? `${cur.refundCount} return${cur.refundCount === 1 ? '' : 's'}` : 'none'}
         />
       </div>
 
@@ -610,6 +610,16 @@ function TillCardView({ t }: { t: ReturnType<typeof tillCards>[number] }) {
           <div className="font-medium">{t.name}</div>
           <div className="text-2xs text-dim truncate">
             {t.operator ?? 'Never opened'}
+            {/* A till that last traded on Saturday must not read as
+                if these are today's figures. */}
+            {t.openedAt && !isToday(t.openedAt) && (
+              <span className="text-faint">
+                {' · '}
+                {new Date(t.openedAt).toLocaleDateString('en-ZA', {
+                  day: '2-digit', month: 'short',
+                })}
+              </span>
+            )}
           </div>
         </div>
         {t.status === 'never' ? (
@@ -643,6 +653,14 @@ function TillCardView({ t }: { t: ReturnType<typeof tillCards>[number] }) {
       )}
     </div>
   );
+}
+
+function isToday(iso: string): boolean {
+  const d = new Date(iso);
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear()
+    && d.getMonth() === n.getMonth()
+    && d.getDate() === n.getDate();
 }
 
 function Mini({ label, value, tone }: { label: string; value: string; tone?: 'warn' | 'bad' }) {

@@ -69,6 +69,10 @@ export interface ReceiptData {
   change_given?: number;
   /** Captured at checkout to email this receipt. Not an account. */
   customer_email?: string | null;
+  /** Loyalty. Printed so the shopper can check their own maths. */
+  customer_phone?: string | null;
+  points_earned?: number;
+  points_balance?: number;
 }
 
 export interface PrintResult {

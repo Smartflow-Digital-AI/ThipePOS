@@ -1,6 +1,6 @@
 'use client';
 
-import { money } from '@/lib/types';
+import { money, formatPhone, POINTS_PER_VOUCHER, VOUCHER_RAND_PER_REDEMPTION } from '@/lib/types';
 import type { ReceiptData } from '@/lib/hardware/types';
 
 // ─────────────────────────────────────────────────────────────
@@ -58,6 +58,7 @@ export function Receipt({ data }: { data: ReceiptData }) {
         <Row left="Till" right={data.till_name} />
         <Row left="Served by" right={data.cashier_name} />
         {data.customer_email && <Row left="Emailed to" right={data.customer_email} />}
+        {data.customer_phone && <Row left="Loyalty" right={formatPhone(data.customer_phone)} />}
 
         <Rule />
 
@@ -135,6 +136,27 @@ export function Receipt({ data }: { data: ReceiptData }) {
               <div className="text-[10px] font-bold mt-1">
                 Keep it safe — it cannot be replaced if lost.
               </div>
+            </div>
+            <Rule />
+          </>
+        )}
+
+        {/* Points, on the slip. A balance a shopper can only learn by
+            asking a cashier is a balance they stop trusting. */}
+        {data.points_earned != null && data.points_earned > 0 && (
+          <>
+            <div className="text-center mb-2">
+              <div className="font-bold">
+                +{data.points_earned} POINTS EARNED
+              </div>
+              {data.points_balance != null && (
+                <div className="text-[10px]">
+                  Balance: {data.points_balance} points
+                  {data.points_balance >= POINTS_PER_VOUCHER && (
+                    <> — ask for your R{VOUCHER_RAND_PER_REDEMPTION} voucher</>
+                  )}
+                </div>
+              )}
             </div>
             <Rule />
           </>

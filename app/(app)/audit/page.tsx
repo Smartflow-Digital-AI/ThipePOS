@@ -1,9 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { ShieldCheck, Wallet, TrendingDown, TrendingUp } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ShieldCheck, Wallet, TrendingDown, TrendingUp, LogIn, ScanLine, Building2 } from 'lucide-react';
 import { usePos } from '@/lib/store';
-import { money, sessionTotals } from '@/lib/types';
+import { money, sessionTotals, sessionMinutes, humanDuration } from '@/lib/types';
 import { Page, Stat, Table, Empty, Segmented } from '@/components/ui/Page';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -15,15 +15,22 @@ import { Page, Stat, Table, Empty, Segmented } from '@/components/ui/Page';
 //
 //    1. Did the drawer balance? On which till, on whose shift?
 //    2. Who authorised the exceptions, and for whom?
+//    3. Who was signed in, where, and for how long?
 //
-//  Neither of these lives in a sales report. A cash variance you
-//  cannot look up a week later is not a control, it is a ritual.
+//  None of these live in a sales report. A cash variance you cannot
+//  look up a week later is not a control, it is a ritual.
+//
+//  The third one is not about the drawer at all. A till session says
+//  who had the cash; it says nothing about who was in the back office
+//  at 22:40 reading cost prices, or who signed in to a till and rang
+//  up nothing.
 // ═══════════════════════════════════════════════════════════════════
 
-type Tab = 'shifts' | 'overrides';
+type Tab = 'shifts' | 'signins' | 'overrides';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'shifts', label: 'Till shifts' },
+  { key: 'signins', label: 'Sign-ins' },
   { key: 'overrides', label: 'Overrides' },
 ];
 
@@ -33,10 +40,10 @@ export default function AuditPage() {
   return (
     <Page
       title="Audit"
-      subtitle="Cash-ups and approved exceptions"
+      subtitle="Cash-ups, who was signed in, and approved exceptions"
       actions={<Segmented value={tab} onChange={setTab} options={TABS} />}
     >
-      {tab === 'shifts' ? <Shifts /> : <Overrides />}
+      {tab === 'shifts' ? <Shifts /> : tab === 'signins' ? <SignIns /> : <Overrides />}
     </Page>
   );
 }
@@ -255,5 +262,114 @@ function Note({ icon: Icon, children }: { icon: typeof Wallet; children: React.R
       <Icon size={14} className="flex-none mt-0.5" />
       <span>{children}</span>
     </div>
+  );
+}
+
+// ─── Sign-ins ────────────────────────────────────────────────────
+
+function SignIns() {
+  const logins = usePos((s) => s.logins);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Anything still active keeps ticking while this screen is open.
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const summary = useMemo(() => {
+    const day = now - 86_400_000;
+    const today = logins.filter((l) => new Date(l.signed_in_at).getTime() >= day);
+    const active = logins.filter((l) => l.ended === 'still_active');
+    const mins = today.map((l) => sessionMinutes(l, now));
+    // After hours: signed in before 07:00 or after 19:00. Not wrong in
+    // itself — worth a manager knowing it happened.
+    const odd = today.filter((l) => {
+      const h = new Date(l.signed_in_at).getHours();
+      return h < 7 || h >= 19;
+    });
+    return {
+      today: today.length,
+      active: active.length,
+      people: new Set(today.map((l) => l.staff_id)).size,
+      longest: mins.length ? Math.max(...mins) : 0,
+      odd: odd.length,
+    };
+  }, [logins, now]);
+
+  if (logins.length === 0) {
+    return <Empty message="No sign-ins recorded yet on this device." />;
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3 mb-5">
+        <Stat label="Sign-ins (24h)" value={String(summary.today)} />
+        <Stat label="People (24h)" value={String(summary.people)} />
+        <Stat
+          label="Signed in now"
+          value={String(summary.active)}
+          tone={summary.active > 0 ? 'ok' : undefined}
+        />
+        <Stat label="Longest session" value={humanDuration(summary.longest)} />
+        <Stat
+          label="Outside 07:00–19:00"
+          value={String(summary.odd)}
+          tone={summary.odd > 0 ? 'warn' : undefined}
+          hint="not wrong — worth knowing"
+        />
+      </div>
+
+      <Table
+        head={[
+          'Who',
+          { l: 'Role', cls: 'hidden md:table-cell' },
+          'Where',
+          'Signed in',
+          { l: 'Signed out', cls: 'hidden lg:table-cell' },
+          'For',
+        ]}
+      >
+        {logins.slice(0, 300).map((l) => {
+          const at = new Date(l.signed_in_at);
+          const odd = at.getHours() < 7 || at.getHours() >= 19;
+          return (
+            <tr key={l.id} className="row">
+              <td className="td font-medium">{l.staff_name}</td>
+              <td className="td text-dim capitalize hidden md:table-cell">
+                {l.role.replace('_', ' ')}
+              </td>
+              <td className="td">
+                <span className="chip-mute">
+                  {l.surface === 'till' ? <ScanLine size={11} /> : <Building2 size={11} />}
+                  {l.surface === 'till' ? (l.till_name ?? 'Till') : 'Back office'}
+                </span>
+              </td>
+              <td className={`td text-2xs whitespace-nowrap ${odd ? 'text-warn' : 'text-dim'}`}>
+                {at.toLocaleString('en-ZA', {
+                  day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                })}
+              </td>
+              <td className="td text-dim text-2xs whitespace-nowrap hidden lg:table-cell">
+                {l.signed_out_at
+                  ? new Date(l.signed_out_at).toLocaleString('en-ZA', {
+                      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                    })
+                  : '—'}
+              </td>
+              <td className="td">
+                {l.ended === 'still_active' ? (
+                  <span className="chip-ok">
+                    <LogIn size={11} /> {humanDuration(sessionMinutes(l, now))}
+                  </span>
+                ) : (
+                  <span className="num text-dim">{humanDuration(sessionMinutes(l, now))}</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </Table>
+    </>
   );
 }
