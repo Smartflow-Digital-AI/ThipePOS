@@ -1,7 +1,11 @@
-node_modules
-.next
-out
-test
-supabase
-_to_delete
+# Anchored with a leading slash on purpose.
+#
+# A pattern without a slash matches a directory of that name at ANY
+# depth — so a bare `supabase` also excluded lib/supabase/, and the
+# deployment built without the Supabase client. Anchor everything.
+/node_modules
+/.next
+/out
+/test
+/supabase
 *.log

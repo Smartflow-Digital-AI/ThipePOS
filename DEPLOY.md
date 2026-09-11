@@ -45,6 +45,19 @@ Delete the `_to_delete` folder first so it is not uploaded.
 `.vercelignore` keeps `node_modules`, `.next`, `test/` and the SQL out
 of the upload.
 
+Every pattern in it is **anchored with a leading slash**, and that
+matters. `.vercelignore` uses gitignore syntax, where a pattern with no
+slash matches a directory of that name at *any* depth — so a bare
+`supabase` line also excluded `lib/supabase/`, and the deployment built
+without the Supabase client:
+
+```
+Module not found: Can't resolve '@/lib/supabase/client'
+```
+
+The build passes locally because the file is right there. It only fails
+on Vercel, because Vercel never received it.
+
 ### Optional environment variables
 
 | Variable | Default | Set it when |
@@ -113,10 +126,11 @@ out-of-stock frontal is out **because it sold out**.
 
 - [ ] Delete the demo PIN card at the bottom of `app/login/page.tsx`
 - [ ] Set `NEXT_PUBLIC_DEMO_MODE=off`
-- [ ] Run the migrations in order: `0001_schema.sql`, `0002_seed.sql`,
-      then `0003_loyalty_alerts_logins.sql` (loyalty, stock alerts and
-      the sign-in log — additive and safe to re-run), and set the two
-      Supabase env vars
+- [ ] Run the migrations **in order**: `0001_schema.sql`,
+      `0002_seed.sql`, `0003_refunds.sql`, then
+      `0004_loyalty_alerts_logins.sql` (loyalty, stock alerts and the
+      sign-in log — additive and safe to re-run). Set the two Supabase
+      env vars.
 - [ ] **Enable RLS** — the policy section in the schema is commented
       out with a warning on it
 - [ ] Move the back-office password login to Supabase Auth; it
