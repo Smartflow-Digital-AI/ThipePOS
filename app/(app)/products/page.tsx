@@ -1,16 +1,32 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Search, Plus } from 'lucide-react';
+import { Search, Plus, Pencil, EyeOff, Eye } from 'lucide-react';
 import { usePos } from '@/lib/store';
 import { money, stockStatus } from '@/lib/types';
 import { Page, Table, Segmented } from '@/components/ui/Page';
 import { CATEGORIES } from '@/lib/data/seed';
+import { ProductForm } from '@/components/pos/ProductForm';
+import { setProductActive, fetchCatalogue } from '@/lib/supabase/catalogue';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+import type { Product } from '@/lib/types';
 
 export default function ProductsPage() {
   const products = usePos((s) => s.products);
+  const setCatalogue = usePos((s) => s.setCatalogue);
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('All');
+  const [editing, setEditing] = useState<Product | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  // Products are never deleted — a sold product has to stay joinable
+  // to the receipt that sold it. Deactivating takes it off the till
+  // and leaves the history intact.
+  const toggleActive = async (p: Product) => {
+    if (!(await setProductActive(p.id, !p.is_active))) return;
+    const fresh = await fetchCatalogue();
+    if (fresh.ok && fresh.products?.length) setCatalogue(fresh.products);
+  };
 
   const rows = useMemo(
     () =>
@@ -33,7 +49,16 @@ export default function ProductsPage() {
       title="Products"
       subtitle={`${products.length} products in the catalogue`}
       actions={
-        <button className="btn-primary">
+        <button
+          className="btn-primary"
+          onClick={() => setAdding(true)}
+          disabled={!isSupabaseConfigured}
+          title={
+            isSupabaseConfigured
+              ? undefined
+              : 'Connect Supabase first — there is nowhere to save a product to'
+          }
+        >
           <Plus size={15} /> Add product
         </button>
       }
@@ -65,6 +90,7 @@ export default function ProductsPage() {
           'Price',
           { l: 'Margin',   cls: 'hidden md:table-cell' },
           'Stock',
+          '',
         ]}>
         {rows.map((p) => {
           const status = stockStatus(p);
@@ -72,9 +98,12 @@ export default function ProductsPage() {
             ? Math.round(((p.sell_price - p.cost_price) / p.sell_price) * 100)
             : 0;
           return (
-            <tr key={p.id} className="row">
+            <tr key={p.id} className={`row ${p.is_active ? '' : 'opacity-50'}`}>
               <td className="td">
-                <div className="font-medium">{p.name}</div>
+                <div className="font-medium">
+                  {p.name}
+                  {!p.is_active && <span className="chip-mute ml-2">Hidden</span>}
+                </div>
                 <div className="text-2xs text-dim">{p.variant}</div>
               </td>
               <td className="td num text-dim hidden lg:table-cell">{p.sku}</td>
@@ -97,10 +126,37 @@ export default function ProductsPage() {
                   <span className="num text-dim">{p.stock}</span>
                 )}
               </td>
+              <td className="td">
+                <div className="flex items-center gap-1 justify-end">
+                  <button
+                    className="text-faint hover:text-brand transition-colors p-1"
+                    onClick={() => setEditing(p)}
+                    title="Edit"
+                    disabled={!isSupabaseConfigured}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    className="text-faint hover:text-ink transition-colors p-1"
+                    onClick={() => void toggleActive(p)}
+                    title={p.is_active ? 'Hide from the till' : 'Put back on the till'}
+                    disabled={!isSupabaseConfigured}
+                  >
+                    {p.is_active ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </td>
             </tr>
           );
         })}
       </Table>
+
+      <ProductForm open={adding} onClose={() => setAdding(false)} />
+      <ProductForm
+        open={editing !== null}
+        product={editing}
+        onClose={() => setEditing(null)}
+      />
     </Page>
   );
 }

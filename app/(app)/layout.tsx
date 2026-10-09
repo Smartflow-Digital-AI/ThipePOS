@@ -10,8 +10,10 @@ import {
 } from 'lucide-react';
 import { usePos } from '@/lib/store';
 import { startSync } from '@/lib/supabase/sync';
+import { signOutDevice } from '@/lib/supabase/auth';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { AlertBell } from '@/components/ui/AlertBell';
+import { CatalogueSync } from '@/components/CatalogueSync';
 import type { Role, Surface } from '@/lib/types';
 import { STORE, TILLS } from '@/lib/data/seed';
 
@@ -101,6 +103,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-[100dvh] overflow-hidden">
+      {/* Keeps the shelf in step with the database. */}
+      <CatalogueSync />
       {/* ── Rail ─────────────────────────────────────────────────
           Narrows on tablets, scrolls if a role has many sections. */}
       <aside
@@ -140,8 +144,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         <button
           onClick={() => {
+            // An office person signing out ends their Supabase session
+            // too — it is their named identity and the sign-in log
+            // depends on it meaning something.
+            //
+            // A till does NOT: the device stays connected so the next
+            // cashier types four digits, not a password. The device
+            // session is undone by an admin, not by signing out.
+            if (surface === 'office') void signOutDevice();
             logout();
-            router.replace('/login');
+            router.replace(surface === 'office' ? '/office/login' : '/login');
           }}
           title="Sign out"
           className="mt-2 h-10 w-10 flex-none rounded-lg flex items-center justify-center

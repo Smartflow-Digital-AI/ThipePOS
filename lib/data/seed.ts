@@ -18,21 +18,53 @@ export const TILLS: Till[] = [
 ];
 
 export const STAFF: Staff[] = [
-  { id: 'st-1', store_id: STORE.id, full_name: 'Karabo Sithole',   role: 'admin',            pin: '9999', email: 'karabo@glowbeauty.co.za', password: 'admin123',   is_active: true },
-  { id: 'st-2', store_id: STORE.id, full_name: 'Kagiso Modise',    role: 'manager',          pin: '5555', email: 'kagiso@glowbeauty.co.za', password: 'manager123', is_active: true },
-  { id: 'st-3', store_id: STORE.id, full_name: 'Thandeka Mokoena', role: 'cashier',          pin: '1234', email: '',                        password: '',           is_active: true },
-  { id: 'st-4', store_id: STORE.id, full_name: 'Sipho Khumalo',    role: 'cashier',          pin: '4321', email: '',                        password: '',           is_active: true },
-  { id: 'st-5', store_id: STORE.id, full_name: 'Zanele Dube',      role: 'stock_controller', pin: '7777', email: 'zanele@glowbeauty.co.za', password: 'stock123',   is_active: true },
+  { id: '33333333-3333-3333-3333-333333333301', store_id: STORE.id, full_name: 'Karabo Sithole',   role: 'admin',            pin: '9999', email: 'karabo@glowbeauty.co.za', password: 'admin123',   is_active: true },
+  { id: '33333333-3333-3333-3333-333333333302', store_id: STORE.id, full_name: 'Kagiso Modise',    role: 'manager',          pin: '5555', email: 'kagiso@glowbeauty.co.za', password: 'manager123', is_active: true },
+  { id: '33333333-3333-3333-3333-333333333303', store_id: STORE.id, full_name: 'Thandeka Mokoena', role: 'cashier',          pin: '1234', email: '',                        password: '',           is_active: true },
+  { id: '33333333-3333-3333-3333-333333333304', store_id: STORE.id, full_name: 'Sipho Khumalo',    role: 'cashier',          pin: '4321', email: '',                        password: '',           is_active: true },
+  { id: '33333333-3333-3333-3333-333333333305', store_id: STORE.id, full_name: 'Zanele Dube',      role: 'stock_controller', pin: '7777', email: 'zanele@glowbeauty.co.za', password: 'stock123',   is_active: true },
 ];
 
 export const CATEGORIES = ['Hair', 'Nails', 'Cosmetics', 'Skincare', 'Tools'] as const;
+
+// ─────────────────────────────────────────────────────────────
+// PRODUCT IDS ARE THE DATABASE'S IDS.
+//
+// This used to be `id: sku`, which read nicely and quietly broke
+// every sync: complete_sale() casts product_id to uuid, so the first
+// push of a real sale would have failed with "invalid input syntax
+// for type uuid: HR-DL-RLX" — on every line of every sale, forever,
+// with the queue climbing and nothing explaining why.
+//
+// These must stay in step with supabase migration 05_seed_with_fixed_ids.
+// Adding a product here without adding it there throws at import
+// rather than failing later at the till.
+// ─────────────────────────────────────────────────────────────
+const DB_SKU_ORDER = [
+  'HR-DL-RLX',  'HR-CN-LIC',  'HR-OR-MAY',  'HR-TC-FOOD', 'HR-LX-BW16',
+  'HR-LX-FR13', 'HR-GN-EDGE', 'NL-CL-GP01', 'NL-CL-GP02', 'NL-NP-ACP',
+  'NL-NP-MON',  'NL-NP-TIP',  'NL-NP-GLU',  'NL-GN-LAMP', 'CS-GS-LIP',
+  'CS-GS-FND',  'CS-GS-MAS',  'CS-GS-PWD',  'CS-GS-EYE',  'SK-GS-VITC',
+  'SK-NH-SHEA', 'SK-NH-SOAP', 'NL-TB-POL250',
+] as const;
+
+function productId(sku: string): string {
+  const i = DB_SKU_ORDER.indexOf(sku as (typeof DB_SKU_ORDER)[number]);
+  if (i === -1) {
+    throw new Error(
+      `Product ${sku} has no database id. Add it to supabase migration ` +
+      `05_seed_with_fixed_ids and to DB_SKU_ORDER, or it will never sync.`
+    );
+  }
+  return `44444444-4444-4444-4444-4444444444${String(i + 1).padStart(2, '0')}`;
+}
 
 const p = (
   sku: string, barcode: string, name: string, variant: string,
   category: string, brand: string, cost: number, sell: number,
   reorder: number, stock: number
 ): Product => ({
-  id: sku, sku, barcode, name, variant, category, brand,
+  id: productId(sku), sku, barcode, name, variant, category, brand,
   cost_price: cost, sell_price: sell, reorder_level: reorder, stock, is_active: true,
 });
 
@@ -64,6 +96,14 @@ export const PRODUCTS: Product[] = [
   p('SK-GS-VITC', '6001234500202', 'Vitamin C Serum',           '30ml',            'Skincare',  'GlowSkin',        16000,  29999,  6,  4),
   p('SK-NH-SHEA', '6001234500219', 'Shea Butter Body Cream',    '500ml',           'Skincare',  'Nubian Heritage',  5200,   9999, 12, 47),
   p('SK-NH-SOAP', '6001234500226', 'African Black Soap',        '150g bar',        'Skincare',  'Nubian Heritage',  2600,   5999, 20, 55),
+
+  // ── Real test product ──────────────────────────────────────
+  // Barcode 2112345678917 is a valid EAN-13. The "21" prefix is the
+  // GS1 restricted-circulation range — the one shops use for labels
+  // they print themselves — and the check digit 7 is correct, so a
+  // hardware scanner accepts it instead of refusing to beep.
+  // Prices are PLACEHOLDERS.
+  p('NL-TB-POL250', '2112345678917', 'Nail Polish',               '250ml',           'Nails',     'Generic',          4200,   8999, 20, 24),
 ];
 
 

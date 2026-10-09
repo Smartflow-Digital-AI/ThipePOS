@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Building2, ScanLine, Eye, EyeOff } from 'lucide-react';
 import { usePos } from '@/lib/store';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+import { signInOffice } from '@/lib/supabase/auth';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { STORE } from '@/lib/data/seed';
 
@@ -16,11 +18,14 @@ import { STORE } from '@/lib/data/seed';
 // password and is meant for a laptop in the back — not the
 // counter PC that stays signed in all day in front of customers.
 //
-// ⚠ BEFORE GO-LIVE: replace this with Supabase Auth. The staff
-//   table already carries auth_user_id for exactly that. See
-//   SETUP.md § "Staff authentication". Matching a password in
-//   the browser is fine for a demo and nowhere near good enough
-//   for the real thing.
+// Authentication is Supabase Auth when a database is configured.
+// It used to string-compare the password against lib/data/seed.ts,
+// which ships inside the JavaScript bundle — anyone who opened
+// devtools on the deployed site could read the owner's password and
+// sign in to cost prices, margins and every report.
+//
+// The local compare survives ONLY for a build with no Supabase
+// configured, which is the offline demo and holds nothing real.
 // ─────────────────────────────────────────────────────────────
 
 export default function OfficeLoginPage() {
@@ -32,9 +37,33 @@ export default function OfficeLoginPage() {
   const [show, setShow] = useState(false);
   const [error, setError] = useState('');
 
-  const submit = (e: React.FormEvent) => {
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setError('');
+
+    if (isSupabaseConfigured) {
+      setBusy(true);
+      const r = await signInOffice(email, password);
+      setBusy(false);
+      if (!r.ok) {
+        setError(r.error ?? 'Those details do not match an account with office access');
+        return;
+      }
+      // The Supabase session is the authority on who this is. The
+      // local store still needs a staff record for the UI — match it
+      // on the email that just authenticated, never on the password.
+      const staff = officeLogin(email, password, { trusted: true });
+      if (!staff) {
+        setError('Signed in, but no staff record matches that address on this device');
+        return;
+      }
+      router.push(staff.role === 'stock_controller' ? '/products' : '/dashboard');
+      return;
+    }
+
     const staff = officeLogin(email, password);
     if (!staff) {
       setError('Those details do not match an account with office access');

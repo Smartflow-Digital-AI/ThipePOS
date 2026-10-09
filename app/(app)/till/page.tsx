@@ -6,7 +6,7 @@ import {
   ShoppingCart, AlertTriangle, ChevronRight,
 } from 'lucide-react';
 import { usePos } from '@/lib/store';
-import { hardware, isMock } from '@/lib/hardware';
+import { hardware, isMockDevice } from '@/lib/hardware';
 import { cartTotals, money, stockStatus, type Product } from '@/lib/types';
 import { CATEGORIES } from '@/lib/data/seed';
 import { PaymentFlow } from '@/components/pos/PaymentFlow';
@@ -270,7 +270,7 @@ export default function TillPage() {
             )}
           </div>
 
-          {isMock() && (
+          {isMockDevice('scanner') && (
             <div className="hidden xl:flex items-center gap-2 px-3 h-11 rounded-lg border border-dashed border-line text-2xs text-faint whitespace-nowrap">
               <ScanLine size={14} />
               Scanner simulated — hover a product
@@ -425,7 +425,7 @@ function ProductTile({
         </div>
       </div>
 
-      {isMock() && !out && (
+      {isMockDevice('scanner') && !out && (
         <button
           onClick={(e) => {
             e.stopPropagation();

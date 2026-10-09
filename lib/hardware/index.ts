@@ -1,11 +1,31 @@
 // ═══════════════════════════════════════════════════════════════════
-//  THE SWITCH
-// ═══════════════════════════════════════════════════════════════════
-//  One env var decides whether the whole app is running on
-//  simulated hardware or real hardware. Nothing else changes.
+//  THE SWITCHES — one per device
 //
-//      NEXT_PUBLIC_HARDWARE_MODE=mock   ← today
-//      NEXT_PUBLIC_HARDWARE_MODE=live   ← when the boxes arrive
+//  This used to be a single NEXT_PUBLIC_HARDWARE_MODE for all four
+//  devices, which cannot describe a real shop. Hardware does not
+//  arrive in one box on one day: the scanner and the drawer turn up
+//  on Tuesday and the printer on Wednesday. Flip one global switch
+//  and the app starts talking to a printer that is not plugged in.
+//
+//  So: a default, and an override per device.
+//
+//      NEXT_PUBLIC_HARDWARE_MODE=mock      ← the default for all four
+//      NEXT_PUBLIC_SCANNER_MODE=live       ← and the exceptions
+//      NEXT_PUBLIC_PRINTER_MODE=live
+//      NEXT_PUBLIC_DRAWER_MODE=live
+//      NEXT_PUBLIC_READER_MODE=live
+//
+//  ── One wiring fact that decides the drawer ──────────────────────
+//
+//  A cash drawer has no brain and usually no cable to the PC. It
+//  hangs off the RJ11 port on the BACK OF THE RECEIPT PRINTER, and it
+//  opens when the printer is sent an ESC/POS kick (see
+//  PrinterKickDrawer in ./live). So the drawer cannot go live before
+//  the printer does, no matter how many drawers are on the counter.
+//
+//  If a drawer with its own USB/serial cable ever replaces it, write
+//  a second CashDrawer implementation and switch on it here — the UI
+//  never changes, which is the whole point of this file.
 // ═══════════════════════════════════════════════════════════════════
 
 import type { HardwareBundle, HardwareMode } from './types';
@@ -14,34 +34,70 @@ import { KeyboardWedgeScanner, ThermalPrinter, PrinterKickDrawer, YocoCardReader
 
 export * from './types';
 
-const MODE: HardwareMode =
+export type DeviceKind = 'scanner' | 'printer' | 'drawer' | 'reader';
+
+const DEFAULT_MODE: HardwareMode =
   (process.env.NEXT_PUBLIC_HARDWARE_MODE as HardwareMode) === 'live' ? 'live' : 'mock';
 
+// Read literally, never computed — Next inlines NEXT_PUBLIC_* at build
+// time by matching the exact text, so process.env[name] returns
+// undefined.
+const OVERRIDES: Record<DeviceKind, string | undefined> = {
+  scanner: process.env.NEXT_PUBLIC_SCANNER_MODE,
+  printer: process.env.NEXT_PUBLIC_PRINTER_MODE,
+  drawer: process.env.NEXT_PUBLIC_DRAWER_MODE,
+  reader: process.env.NEXT_PUBLIC_READER_MODE,
+};
+
 const PRINT_BRIDGE = process.env.NEXT_PUBLIC_PRINT_BRIDGE_URL || '';
+
+function resolve(kind: DeviceKind): HardwareMode {
+  const o = OVERRIDES[kind];
+  if (o === 'live') return 'live';
+  if (o === 'mock') return 'mock';
+  return DEFAULT_MODE;
+}
+
+/** What this device is actually running on. */
+export function deviceMode(kind: DeviceKind): HardwareMode {
+  // A live drawer with a simulated printer is a drawer that silently
+  // never opens: the kick is an ESC/POS command down the printer's
+  // cable. Report the truth rather than letting a cashier wait for a
+  // drawer that was never going to move.
+  if (kind === 'drawer' && resolve('drawer') === 'live' && resolve('printer') !== 'live') {
+    return 'mock';
+  }
+  return resolve(kind);
+}
 
 let bundle: HardwareBundle | null = null;
 
 export function hardware(): HardwareBundle {
   if (bundle) return bundle;
 
-  bundle =
-    MODE === 'live'
-      ? {
-          mode: 'live',
-          scanner: new KeyboardWedgeScanner(),
-          printer: new ThermalPrinter({ bridgeUrl: PRINT_BRIDGE || undefined }),
-          drawer: new PrinterKickDrawer(PRINT_BRIDGE),
-          reader: new YocoCardReader(),
-        }
-      : {
-          mode: 'mock',
-          scanner: new MockScanner(),
-          printer: new MockPrinter(),
-          drawer: new MockDrawer(),
-          reader: new MockCardReader(),
-        };
+  const printerLive = deviceMode('printer') === 'live';
+
+  bundle = {
+    // The bundle's own mode is 'live' only when everything is.
+    mode: (['scanner', 'printer', 'drawer', 'reader'] as DeviceKind[])
+      .every((k) => deviceMode(k) === 'live')
+      ? 'live'
+      : 'mock',
+    scanner: deviceMode('scanner') === 'live' ? new KeyboardWedgeScanner() : new MockScanner(),
+    printer: printerLive
+      ? new ThermalPrinter({ bridgeUrl: PRINT_BRIDGE || undefined })
+      : new MockPrinter(),
+    drawer: deviceMode('drawer') === 'live' ? new PrinterKickDrawer(PRINT_BRIDGE) : new MockDrawer(),
+    reader: deviceMode('reader') === 'live' ? new YocoCardReader() : new MockCardReader(),
+  };
 
   return bundle;
 }
 
-export const isMock = () => MODE === 'mock';
+/** True when ANY device is still simulated — drives the UI hints. */
+export const isMock = () =>
+  (['scanner', 'printer', 'drawer', 'reader'] as DeviceKind[])
+    .some((k) => deviceMode(k) === 'mock');
+
+/** Per-device, for a hint that should disappear as each one arrives. */
+export const isMockDevice = (kind: DeviceKind) => deviceMode(kind) === 'mock';

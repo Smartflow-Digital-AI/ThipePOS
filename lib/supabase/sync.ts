@@ -1,8 +1,12 @@
 'use client';
 
 import { supabase, isSupabaseConfigured } from './client';
+import { isConnected } from './auth';
 import { usePos } from '@/lib/store';
-import type { Delivery, Override, Refund, Sale, StockMovement } from '@/lib/types';
+import type {
+  Delivery, Override, Refund, Sale, StockMovement,
+  TillSession, LoyaltyMember, LoyaltyTxn, StockAlert, LoginEvent,
+} from '@/lib/types';
 
 // ═══════════════════════════════════════════════════════════════════
 //  THE SYNC PUSHER
@@ -28,7 +32,12 @@ export async function pushSale(sale: Sale): Promise<boolean> {
   const sb = supabase();
   if (!sb) return false;
 
-  const { error } = await sb.rpc('complete_sale', {
+  const { error } = await sb.rpc('complete_sale_v2', {
+    // The till's own id and the number PRINTED on the slip. The id is
+    // the primary key server-side, so a retry of a push that already
+    // landed is a no-op rather than a second sale.
+    p_sale_id: sale.id,
+    p_sale_number: sale.sale_number,
     p_store_id: sale.store_id || STORE_ID,
     p_till_id: sale.till_id,
     p_till_session_id: sale.till_session_id || null,
@@ -67,7 +76,11 @@ export async function pushRefund(refund: Refund): Promise<boolean> {
   const sb = supabase();
   if (!sb) return false;
 
-  const { error } = await sb.rpc('process_refund', {
+  const { error } = await sb.rpc('process_refund_v2', {
+    p_refund_id: refund.id,
+    p_refund_number: refund.refund_number,
+    // Now meaningful: the sale carries the till's id as its primary
+    // key server-side, so the local sale_id IS the server's sale id.
     p_sale_id: refund.sale_id,
     p_store_id: refund.store_id || STORE_ID,
     p_till_id: refund.till_id,
@@ -181,18 +194,209 @@ export async function pushMovement(m: StockMovement): Promise<boolean> {
 }
 
 /** Drain everything unsynced. Safe to call as often as you like. */
+/**
+ * Till sessions, which nothing pushed before.
+ *
+ * A sale carries till_session_id. If the session has never reached
+ * the server the sale fails its foreign key — so sessions go first,
+ * every cycle, before anything that references them.
+ *
+ * Upserted rather than queued: a shift is opened once and then
+ * mutated once (at cash-up), there are only a handful a day, and an
+ * upsert is self-healing if either write was missed.
+ */
+export async function pushSession(session: TillSession): Promise<boolean> {
+  const sb = supabase();
+  if (!sb) return false;
+
+  const { error } = await sb.from('till_sessions').upsert(
+    {
+      id: session.id,
+      till_id: session.till_id,
+      store_id: session.store_id || STORE_ID,
+      opened_by: session.opened_by,
+      opened_at: session.opened_at,
+      opening_float: session.opening_float,
+      closed_by: session.closed_by ?? null,
+      closed_at: session.closed_at ?? null,
+      counted_cash: session.counted_cash ?? null,
+      // The cash-up was performed at the till, on paper money, by a
+      // person. These are its numbers — the server does not get to
+      // recompute them and disagree.
+      expected_cash: session.expected_cash ?? null,
+      variance: session.variance ?? null,
+      status: session.status,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('[sync] session failed, will retry:', session.till_name, error.message);
+    return false;
+  }
+  return true;
+}
+
+export async function pushLoyaltyMember(m: LoyaltyMember): Promise<boolean> {
+  const sb = supabase();
+  if (!sb) return false;
+
+  const { error } = await sb.from('loyalty_members').upsert(
+    {
+      id: m.id,
+      store_id: STORE_ID,
+      phone: m.phone,
+      name: m.name ?? null,
+      points: m.points,
+      lifetime_spend: m.lifetime_spend,
+      marketing_opt_in: m.marketing_opt_in,
+      joined_at: m.joined_at,
+      last_seen_at: m.last_seen_at,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('[sync] loyalty member failed, will retry:', m.phone, error.message);
+    return false;
+  }
+  return true;
+}
+
+export async function pushLoyaltyTxn(t: LoyaltyTxn): Promise<boolean> {
+  const sb = supabase();
+  if (!sb) return false;
+
+  const { error } = await sb.from('loyalty_ledger').upsert(
+    {
+      id: t.id,
+      member_id: t.member_id,
+      store_id: STORE_ID,
+      points: t.points,
+      balance_after: t.balance_after,
+      reason: t.reason,
+      reference: t.reference,
+      staff_id: t.staff_id || null,
+      created_at: t.created_at,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('[sync] points ledger failed, will retry:', t.reference, error.message);
+    return false;
+  }
+  return true;
+}
+
+export async function pushAlert(a: StockAlert): Promise<boolean> {
+  const sb = supabase();
+  if (!sb) return false;
+
+  const { error } = await sb.from('stock_alerts').upsert(
+    {
+      id: a.id,
+      store_id: STORE_ID,
+      product_id: a.product_id,
+      kind: a.kind,
+      level: a.level,
+      threshold: a.threshold,
+      trigger: a.trigger,
+      roles: a.roles,
+      created_at: a.created_at,
+      // Upsert, not insert: an alert raised offline and resolved
+      // offline must land in its resolved state, not as a fresh one.
+      resolved_at: a.resolved_at ?? null,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('[sync] stock alert failed, will retry:', a.sku, error.message);
+    return false;
+  }
+  return true;
+}
+
+export async function pushLogin(l: LoginEvent): Promise<boolean> {
+  const sb = supabase();
+  if (!sb) return false;
+
+  const { error } = await sb.from('login_events').upsert(
+    {
+      id: l.id,
+      store_id: STORE_ID,
+      staff_id: l.staff_id,
+      role: l.role,
+      surface: l.surface,
+      till_id: l.till_id ?? null,
+      signed_in_at: l.signed_in_at,
+      signed_out_at: l.signed_out_at ?? null,
+      ended: l.ended,
+    },
+    { onConflict: 'id' }
+  );
+
+  if (error) {
+    console.warn('[sync] sign-in failed, will retry:', l.staff_name, error.message);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Anything minted before ids became uuids can never be pushed —
+ * Postgres rejects the cast. Skip it rather than retrying it every
+ * thirty seconds forever behind a badge that never clears.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let warnedLegacy = false;
+function syncable<T extends { id: string }>(rows: T[]): T[] {
+  const ok = rows.filter((r) => UUID.test(r.id));
+  if (ok.length !== rows.length && !warnedLegacy) {
+    warnedLegacy = true;
+    console.warn(
+      `[sync] ${rows.length - ok.length} record(s) predate uuid ids and cannot be ` +
+      `pushed. Settings -> Local data -> Clear everything to drop them.`
+    );
+  }
+  return ok;
+}
+
 export async function drainQueue(): Promise<number> {
   if (!isSupabaseConfigured || !navigator.onLine) return 0;
 
+  // No session, no pushing. Under RLS an unauthenticated write is
+  // rejected anyway; checking here means the queue HOLDS instead of
+  // burning through every row against a wall every thirty seconds.
+  // Nothing is lost — it drains the moment the device is connected.
+  if (!(await isConnected())) return 0;
+
   const {
     sales, refunds, overrides, creditNotes, stockMovements, deliveries,
+    sessions, loyaltyMembers, loyaltyLedger, alerts, logins,
     markSynced, markRefundsSynced, markOverridesSynced, markVouchersSynced,
     markMovementsSynced, markDeliveriesSynced,
+    markLoyaltySynced, markAlertsSynced, markLoginsSynced,
   } = usePos.getState();
 
-  // Sales first, always. A refund references a sale, so pushing a
-  // refund for a sale the server has never seen just fails.
-  const pendingSales = sales.filter((s) => !s.synced);
+  // SESSIONS FIRST. Every sale carries a till_session_id, so a sale
+  // pushed before its shift exists fails its foreign key. Only the
+  // live one and anything closed in the last day — older shifts are
+  // already up and never change again.
+  const DAY = 24 * 60 * 60 * 1000;
+  const recentSessions = syncable(
+    sessions.filter(
+      (x) =>
+        x.status === 'open' ||
+        (x.closed_at ? Date.now() - new Date(x.closed_at).getTime() < DAY : false)
+    )
+  );
+  for (const session of recentSessions) await pushSession(session);
+
+  // Then sales. A refund references a sale, so pushing a refund for a
+  // sale the server has never seen just fails.
+  const pendingSales = syncable(sales.filter((s) => !s.synced));
   const done: string[] = [];
   for (const sale of pendingSales) {
     if (await pushSale(sale)) done.push(sale.id);
@@ -202,8 +406,8 @@ export async function drainQueue(): Promise<number> {
   const syncedSaleIds = new Set(
     usePos.getState().sales.filter((s) => s.synced).map((s) => s.id)
   );
-  const pendingRefunds = refunds.filter(
-    (r) => !r.synced && syncedSaleIds.has(r.sale_id)
+  const pendingRefunds = syncable(
+    refunds.filter((r) => !r.synced && syncedSaleIds.has(r.sale_id))
   );
   const refundsDone: string[] = [];
   for (const refund of pendingRefunds) {
@@ -262,8 +466,44 @@ export async function drainQueue(): Promise<number> {
     markMovementsSynced([...movementsDone, ...carried]);
   }
 
+  // ── Loyalty ───────────────────────────────────────────────
+  // Members before the ledger: a points row references a member.
+  const membersDone: string[] = [];
+  for (const m of syncable(loyaltyMembers.filter((x) => !x.synced))) {
+    if (await pushLoyaltyMember(m)) membersDone.push(m.id);
+  }
+  const syncedMembers = new Set([
+    ...loyaltyMembers.filter((m) => m.synced).map((m) => m.id),
+    ...membersDone,
+  ]);
+  const txnsDone: string[] = [];
+  for (const t of syncable(
+    loyaltyLedger.filter((x) => !x.synced && syncedMembers.has(x.member_id))
+  )) {
+    if (await pushLoyaltyTxn(t)) txnsDone.push(t.id);
+  }
+  if (membersDone.length || txnsDone.length) {
+    markLoyaltySynced([...membersDone, ...txnsDone]);
+  }
+
+  // ── Stock alerts ──────────────────────────────────────────
+  const alertsDone: string[] = [];
+  for (const a of syncable(alerts.filter((x) => !x.synced))) {
+    if (await pushAlert(a)) alertsDone.push(a.id);
+  }
+  if (alertsDone.length) markAlertsSynced(alertsDone);
+
+  // ── Sign-ins ──────────────────────────────────────────────
+  const loginsDone: string[] = [];
+  for (const l of syncable(logins.filter((x) => !x.synced))) {
+    if (await pushLogin(l)) loginsDone.push(l.id);
+  }
+  if (loginsDone.length) markLoginsSynced(loginsDone);
+
   return done.length + refundsDone.length + overridesDone.length +
-         deliveriesDone.length + movementsDone.length;
+         deliveriesDone.length + movementsDone.length +
+         membersDone.length + txnsDone.length +
+         alertsDone.length + loginsDone.length;
 }
 
 /** Call once from a client component to keep the queue moving. */
@@ -272,11 +512,15 @@ export function startSync(intervalMs = 30_000) {
 
   void drainQueue();
   const timer = setInterval(() => void drainQueue(), intervalMs);
+  // Connecting the till should drain immediately, not after the next
+  // tick — the person who just typed the password is watching.
+  const auth = supabase()?.auth.onAuthStateChange(() => void drainQueue());
   const onOnline = () => void drainQueue();
   window.addEventListener('online', onOnline);
 
   return () => {
     clearInterval(timer);
+    auth?.data.subscription.unsubscribe();
     window.removeEventListener('online', onOnline);
   };
 }

@@ -12,6 +12,19 @@ let client: SupabaseClient | null = null;
 
 export function supabase(): SupabaseClient | null {
   if (!isSupabaseConfigured) return null;
-  if (!client) client = createClient(url!, key!);
+  if (!client) {
+    client = createClient(url!, key!, {
+      auth: {
+        // The till is connected ONCE by hand and then expected to
+        // keep working for months without anyone signing in again —
+        // including through a night with no internet. Persist the
+        // session and refresh it silently.
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storageKey: 'beautypos-auth',
+      },
+    });
+  }
   return client;
 }

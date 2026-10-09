@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Delete, Sparkles, Building2 } from 'lucide-react';
 import { usePos } from '@/lib/store';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
+import { isConnected } from '@/lib/supabase/auth';
+import { ConnectTill } from '@/components/pos/ConnectTill';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { TILLS, STORE, STAFF } from '@/lib/data/seed';
 import { TILL_ROLES } from '@/lib/types';
@@ -26,6 +29,20 @@ export default function LoginPage() {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const settled = useRef(false);
+
+  // null = still checking. Avoids flashing the connect screen at a
+  // till that is already connected.
+  const [connected, setConnected] = useState<boolean | null>(
+    isSupabaseConfigured ? null : true
+  );
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let alive = true;
+    void isConnected().then((ok) => alive && setConnected(ok));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const press = useCallback((d: string) => {
     setError('');
@@ -62,6 +79,19 @@ export default function LoginPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [press]);
+
+  if (connected === null) return null;
+
+  if (!connected) {
+    return (
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6">
+        <div className="absolute top-4 right-4">
+          <ThemeToggle />
+        </div>
+        <ConnectTill onConnected={() => setConnected(true)} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6">
@@ -131,7 +161,12 @@ export default function LoginPage() {
           Back office sign-in
         </Link>
 
-        {/* Demo hint — delete this block before go-live. */}
+        {/* Demo PINs, and ONLY on a build with no database behind it.
+            On a deployed URL with a live Supabase project this was
+            publishing the admin PIN to the internet — 9999 opens
+            override approval on every till. It is a demo aid, so it
+            appears only when there is nothing real to protect. */}
+        {!isSupabaseConfigured && (
         <div className="mt-5 card p-3">
           <div className="text-2xs uppercase tracking-wider text-faint mb-2">Demo till PINs</div>
           <div className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-2xs text-dim">
@@ -144,6 +179,7 @@ export default function LoginPage() {
             5555 and 9999 also approve overrides at the till.
           </div>
         </div>
+        )}
       </div>
     </div>
   );

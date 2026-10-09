@@ -9,3 +9,5 @@
 /test
 /supabase
 *.log
+/_to_delete
+/CREDENTIALS.local.md

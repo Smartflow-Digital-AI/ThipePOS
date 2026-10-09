@@ -73,7 +73,13 @@ interface PosState {
   /** PIN at the counter. Opens a TILL session only. */
   tillLogin: (pin: string) => Staff | null;
   /** Email + password from a laptop. Opens an OFFICE session only. */
-  officeLogin: (email: string, password: string) => Staff | null;
+  /**
+   * `trusted` means Supabase Auth has ALREADY verified this person and
+   * we only need the local staff record for the UI. Without a database
+   * configured it falls back to the seed compare, which is a demo
+   * convenience and not a security boundary.
+   */
+  officeLogin: (email: string, password: string, opts?: { trusted?: boolean }) => Staff | null;
   logout: () => void;
 
   /** A manager approves ONE action. Does NOT change who is signed in. */
@@ -178,10 +184,48 @@ interface PosState {
    * the auto-seeder must not quietly refill it on the next reload.
    */
   resetAll: () => void;
+
+  // ── catalogue ──
+  /**
+   * Replace the local shelf with the database's.
+   *
+   * The local copy stays, as the offline cache — the till keeps
+   * selling through a dead line — but the database is the authority
+   * whenever there is one. Before this, products lived in a compiled
+   * TypeScript array, so changing a price meant a redeploy.
+   */
+  setCatalogue: (products: Product[]) => void;
+  /** When the catalogue last came from the server. */
+  catalogueSyncedAt: string | null;
 }
 
 const nowIso = () => new Date().toISOString();
-const uid = () => Math.random().toString(36).slice(2, 10);
+/**
+ * Real UUIDs, not short random strings.
+ *
+ * Postgres casts these: a sale id of "sale-k3f9x2" fails the uuid
+ * cast in complete_sale and the push dies — forever, on every retry,
+ * with the queue climbing and nothing saying why. Every id minted
+ * here crosses the wire eventually, so every id is a uuid.
+ *
+ * crypto.randomUUID needs a secure context (https or localhost),
+ * which a till on a shop LAN over plain http is not, hence the
+ * fallback.
+ */
+const uid = (): string => {
+  const c = typeof crypto !== 'undefined' ? crypto : undefined;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  if (c && typeof c.getRandomValues === 'function') {
+    const b = c.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;   // version 4
+    b[8] = (b[8] & 0x3f) | 0x80;   // variant 10
+    const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+  }
+  // Last resort. Still shaped like a uuid so the cast succeeds.
+  const r = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  return `${r()}${r()}-${r()}-4${r().slice(1)}-a${r().slice(1)}-${r()}${r()}${r()}`;
+};
 
 // ─── The sign-in log ─────────────────────────────────────────
 // Till sessions say who had the drawer. They say nothing about who
@@ -190,7 +234,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 function openLogin(who: Staff, surface: Surface, tillId: string | null): LoginEvent {
   const till = tillId ? TILLS.find((t) => t.id === tillId) : null;
   return {
-    id: 'lg-' + uid(),
+    id: uid(),
     staff_id: who.id,
     staff_name: who.full_name,
     role: who.role,
@@ -252,7 +296,7 @@ function applyMovements(
     next = next.map((x) => (x.id === p.id ? { ...x, stock: balance } : x));
 
     movements.push({
-      id: 'mv-' + uid(),
+      id: uid(),
       product_id: p.id,
       sku: p.sku,
       name: p.name,
@@ -326,7 +370,7 @@ function reconcileAlerts(
     }
 
     fresh.push({
-      id: 'alr-' + uid(),
+      id: uid(),
       kind,
       product_id: p.id,
       sku: p.sku,
@@ -369,6 +413,7 @@ export const usePos = create<PosState>()(
       loyaltyMembers: [],
       loyaltyLedger: [],
       logins: [],
+      catalogueSyncedAt: null,
       demoSeeded: false,
 
       // ── ALERTS ───────────────────────────────────────────────
@@ -431,7 +476,7 @@ export const usePos = create<PosState>()(
         }
 
         const member: LoyaltyMember = {
-          id: 'ly-' + uid(),
+          id: uid(),
           phone: key,
           name: name ?? null,
           points: 0,
@@ -462,7 +507,7 @@ export const usePos = create<PosState>()(
         const amount = VOUCHER_RAND_PER_REDEMPTION * 100;
 
         const voucher: CreditNote = {
-          id: 'cn-' + uid(),
+          id: uid(),
           code: makeVoucherCode(),
           amount,
           remaining: amount,
@@ -475,7 +520,7 @@ export const usePos = create<PosState>()(
 
         const balance = member.points - POINTS_PER_VOUCHER;
         const txn: LoyaltyTxn = {
-          id: 'lt-' + uid(),
+          id: uid(),
           member_id: member.id,
           phone: member.phone,
           points: -POINTS_PER_VOUCHER,
@@ -550,6 +595,16 @@ export const usePos = create<PosState>()(
         return true;
       },
 
+      setCatalogue: (products) =>
+        set((st) => ({
+          products,
+          catalogueSyncedAt: nowIso(),
+          // Drop anything in the cart that no longer exists upstream,
+          // rather than letting a cashier tender a product the
+          // database will reject at the end of the sale.
+          cart: st.cart.filter((l) => products.some((p) => p.id === l.product_id)),
+        })),
+
       resetAll: () =>
         set({
           products: PRODUCTS.map((p) => ({ ...p })),
@@ -586,15 +641,16 @@ export const usePos = create<PosState>()(
         return found;
       },
 
-      officeLogin: (email, password) => {
+      officeLogin: (email, password, opts) => {
         const e = email.trim().toLowerCase();
         const found = STAFF.find(
           (s) =>
             s.is_active &&
             OFFICE_ROLES.includes(s.role) &&
             s.email.toLowerCase() === e &&
-            s.password === password &&
-            s.password !== ''
+            // Already proven by Supabase Auth — do not second-guess it
+            // against a password that lives in the client bundle.
+            (opts?.trusted || (s.password === password && s.password !== ''))
         );
         if (!found) return null;
         set((st) => ({
@@ -627,7 +683,7 @@ export const usePos = create<PosState>()(
         if (!approver) return null;
 
         const record: Override = {
-          id: 'ovr-' + uid(),
+          id: uid(),
           store_id: STORE.id,
           till_id: tillId,
           till_session_id: session?.id ?? '',
@@ -659,7 +715,7 @@ export const usePos = create<PosState>()(
         if (!staff) return;
         const till = TILLS.find((t) => t.id === tillId)!;
         const opened: TillSession = {
-          id: 'ts-' + uid(),
+          id: uid(),
           till_id: tillId,
           till_name: till.name,
           store_id: STORE.id,
@@ -826,7 +882,7 @@ export const usePos = create<PosState>()(
         const change = cashReceived != null ? Math.max(0, cashReceived - totals.total) : undefined;
 
         const sale: Sale = {
-          id: 'sale-' + uid(),
+          id: uid(),
           sale_number: 'S-' + String(1000 + sales.length + 1),
           store_id: STORE.id,
           till_id: tillId,
@@ -900,7 +956,7 @@ export const usePos = create<PosState>()(
           if (earned > 0) {
             ledger = [
               {
-                id: 'lt-' + uid(),
+                id: uid(),
                 member_id: member.id,
                 phone: member.phone,
                 points: earned,
@@ -985,7 +1041,7 @@ export const usePos = create<PosState>()(
           expires.setFullYear(expires.getFullYear() + VOUCHER_VALID_YEARS);
 
           voucher = {
-            id: 'cn-' + uid(),
+            id: uid(),
             code: makeVoucherCode(),
             amount: total,
             remaining: total,
@@ -998,7 +1054,7 @@ export const usePos = create<PosState>()(
         }
 
         const refund: Refund = {
-          id: 'ref-' + uid(),
+          id: uid(),
           refund_number: 'R-' + String(2000 + refunds.length + 1),
           sale_id: sale.id,
           sale_number: sale.sale_number,
@@ -1064,7 +1120,7 @@ export const usePos = create<PosState>()(
             );
             ledger = [
               {
-                id: 'lt-' + uid(),
+                id: uid(),
                 member_id: member.id,
                 phone: member.phone,
                 points: -clawback,
@@ -1287,6 +1343,7 @@ export const usePos = create<PosState>()(
         loyaltyMembers: s.loyaltyMembers,
         loyaltyLedger: s.loyaltyLedger,
         logins: s.logins,
+        catalogueSyncedAt: s.catalogueSyncedAt,
         demoSeeded: s.demoSeeded,
       }),
     }

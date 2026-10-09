@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Cpu, Store as StoreIcon, Users, Receipt, Trash2, CheckCircle2, CircleDashed, Palette, RefreshCw, Bell, Minus, Plus } from 'lucide-react';
 import { usePos } from '@/lib/store';
-import { hardware, isMock } from '@/lib/hardware';
+import { hardware, isMock, isMockDevice, type DeviceKind } from '@/lib/hardware';
 import { Page } from '@/components/ui/Page';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { STORE, TILLS, STAFF } from '@/lib/data/seed';
@@ -20,11 +20,11 @@ export default function SettingsPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const hw = hardware();
 
-  const devices = [
-    { name: 'Barcode scanner', driver: hw.scanner.mode === 'mock' ? 'Simulated (click to scan)' : 'USB keyboard wedge' },
-    { name: 'Receipt printer', driver: hw.printer.mode === 'mock' ? 'Simulated (on-screen preview)' : 'Thermal 80mm' },
-    { name: 'Cash drawer',     driver: hw.drawer.mode === 'mock' ? 'Simulated' : 'Printer kick (ESC/POS)' },
-    { name: 'Card machine',    driver: hw.reader.mode === 'mock' ? 'Simulated Yoco' : 'Yoco terminal' },
+  const devices: { kind: DeviceKind; name: string; driver: string; note?: string }[] = [
+    { kind: 'scanner', name: 'Barcode scanner', driver: hw.scanner.mode === 'mock' ? 'Simulated (click to scan)' : 'USB keyboard wedge' },
+    { kind: 'printer', name: 'Receipt printer', driver: hw.printer.mode === 'mock' ? 'Simulated (on-screen preview)' : 'Thermal 80mm' },
+    { kind: 'drawer', name: 'Cash drawer',     driver: hw.drawer.mode === 'mock' ? 'Simulated' : 'Printer kick (ESC/POS)' },
+    { kind: 'reader', name: 'Card machine',    driver: hw.reader.mode === 'mock' ? 'Simulated Yoco' : 'Yoco terminal' },
   ];
 
   return (
@@ -54,7 +54,9 @@ export default function SettingsPage() {
             <span className="font-medium">Hardware</span>
           </div>
           <span className={isMock() ? 'chip-warn' : 'chip-ok'}>
-            {isMock() ? 'Simulation mode' : 'Live devices'}
+            {isMock()
+              ? `${devices.filter((d) => isMockDevice(d.kind)).length} of 4 simulated`
+              : 'All devices live'}
           </span>
         </div>
 
@@ -64,11 +66,21 @@ export default function SettingsPage() {
               key={d.name}
               className="flex items-center justify-between px-3.5 h-14 rounded-lg bg-raised border border-line"
             >
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm">{d.name}</div>
-                <div className="text-2xs text-dim">{d.driver}</div>
+                <div className="text-2xs text-dim truncate">
+                  {d.driver}
+                  {/* A drawer kicks through the printer's cable, so a
+                      live drawer with a simulated printer is a drawer
+                      that silently never opens. Say so. */}
+                  {d.kind === 'drawer' &&
+                    process.env.NEXT_PUBLIC_DRAWER_MODE === 'live' &&
+                    isMockDevice('printer') && (
+                      <span className="text-warn"> · waiting on the printer</span>
+                    )}
+                </div>
               </div>
-              {isMock() ? (
+              {isMockDevice(d.kind) ? (
                 <CircleDashed size={16} className="text-warn" />
               ) : (
                 <CheckCircle2 size={16} className="text-ok" />
@@ -79,9 +91,15 @@ export default function SettingsPage() {
 
         <div className="text-2xs text-dim leading-relaxed px-3 py-2.5 rounded bg-base border border-line">
           Every device sits behind an interface in{' '}
-          <code className="text-brand">lib/hardware/</code>. To go live, finish the
-          driver classes in <code className="text-brand">live.ts</code> and set{' '}
-          <code className="text-brand">NEXT_PUBLIC_HARDWARE_MODE=live</code>. No screen changes.
+          <code className="text-brand">lib/hardware/</code>, and each one switches
+          on independently — hardware never arrives in one box on one day. Set{' '}
+          <code className="text-brand">NEXT_PUBLIC_SCANNER_MODE=live</code> (or{' '}
+          <code className="text-brand">PRINTER</code>,{' '}
+          <code className="text-brand">DRAWER</code>,{' '}
+          <code className="text-brand">READER</code>) as each is plugged in. No
+          screen changes. The cash drawer is the exception: it hangs off the
+          printer&apos;s RJ11 port and opens by ESC/POS, so it cannot go live
+          before the printer does.
         </div>
       </div>
 

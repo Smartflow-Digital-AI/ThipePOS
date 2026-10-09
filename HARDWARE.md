@@ -167,3 +167,33 @@ The failures that hurt are the boring ones:
 - [ ] Open Till 2 on two PCs at once — the database should refuse the second.
 - [ ] Close a till with a deliberate R50 short — does the variance read −R50?
 - [ ] Reprint a receipt from Sales history — does it match the original exactly?
+
+
+## Switching a device on
+
+Each device has its own switch, because they arrive on different days.
+
+```
+NEXT_PUBLIC_HARDWARE_MODE=mock   # default for all four
+NEXT_PUBLIC_SCANNER_MODE=live
+NEXT_PUBLIC_PRINTER_MODE=live
+NEXT_PUBLIC_DRAWER_MODE=live
+NEXT_PUBLIC_READER_MODE=live
+```
+
+Order they can realistically go live in:
+
+1. **Scanner** — any time. It is a keyboard wedge; plug it in and it
+   types digits. No driver, no bridge.
+2. **Printer** — needs the print bridge running on the till and
+   `NEXT_PUBLIC_PRINT_BRIDGE_URL` pointing at it.
+3. **Drawer** — only after the printer. It opens by an ESC/POS kick
+   sent down the printer's cable (`PrinterKickDrawer`), so a live
+   drawer with a simulated printer is a drawer that silently never
+   opens. The app reports it as simulated until the printer is live.
+4. **Card machine** — needs the Yoco keys.
+
+If a drawer with its own USB cable ever replaces the RJ11 one, write a
+second `CashDrawer` implementation and switch on it in
+`lib/hardware/index.ts`. No screen changes — that is what the
+interface is for.

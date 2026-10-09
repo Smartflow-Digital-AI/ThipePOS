@@ -10,7 +10,7 @@ import { MoneyInput } from '@/components/ui/MoneyInput';
 import { receiptSender, looksLikeEmail } from '@/lib/notifications';
 import { Receipt } from '@/components/pos/Receipt';
 import { usePos } from '@/lib/store';
-import { hardware, isMock } from '@/lib/hardware';
+import { hardware, isMockDevice } from '@/lib/hardware';
 import type { ReaderState, ReceiptData } from '@/lib/hardware/types';
 import { cartTotals, money, type PaymentPart, type Sale } from '@/lib/types';
 import { STORE, TILLS } from '@/lib/data/seed';
@@ -677,7 +677,7 @@ function CardStage({ state, onCancel }: { state: ReaderState; onCancel: () => vo
 
       {/* Simulator controls — only ever rendered in mock mode.
           In live mode the customer's real card decides this. */}
-      {isMock() && waiting && (
+      {isMockDevice('reader') && waiting && (
         <div className="mb-6 p-3 rounded-lg bg-raised border border-dashed border-line">
           <div className="text-2xs uppercase tracking-wider text-faint mb-2.5">
             Simulator — stands in for the Yoco machine
