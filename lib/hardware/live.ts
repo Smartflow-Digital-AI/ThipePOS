@@ -29,6 +29,29 @@ import type {
 // faster than a human can (<50ms apart) and finish with Enter.
 // We buffer fast keystrokes and flush on Enter.
 
+type Editable = HTMLInputElement | HTMLTextAreaElement;
+
+function isEditable(t: EventTarget | null): t is Editable {
+  return (
+    t instanceof HTMLInputElement ||
+    t instanceof HTMLTextAreaElement
+  );
+}
+
+// React owns the value of a controlled input, so assigning .value does
+// nothing it notices. Going through the prototype setter and firing a
+// bubbling 'input' event is what React's own onChange listens for.
+function setNativeValue(el: Editable, value: string) {
+  const proto =
+    el instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  if (setter) setter.call(el, value);
+  else el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 export class KeyboardWedgeScanner implements BarcodeScanner {
   readonly kind = 'scanner' as const;
   readonly mode = 'live' as const;
@@ -38,6 +61,10 @@ export class KeyboardWedgeScanner implements BarcodeScanner {
   private lastKeyAt = 0;
   private bound = false;
 
+  // Where the first character of a burst landed, so it can be taken
+  // back out if the burst turns out to be a scan. See bind().
+  private leak: { el: Editable; at: number; ch: string } | null = null;
+
   /** Max gap between keystrokes that still counts as "the scanner typing". */
   private static readonly BURST_MS = 50;
   private static readonly MIN_LENGTH = 4;
@@ -46,25 +73,76 @@ export class KeyboardWedgeScanner implements BarcodeScanner {
     if (this.bound || typeof window === 'undefined') return;
     this.bound = true;
 
-    window.addEventListener('keydown', (e) => {
-      const now = Date.now();
-
-      // A slow keystroke means a human is typing — throw the buffer away.
-      if (now - this.lastKeyAt > KeyboardWedgeScanner.BURST_MS) this.buffer = '';
-      this.lastKeyAt = now;
-
-      if (e.key === 'Enter') {
-        const code = this.buffer.trim();
-        this.buffer = '';
-        if (code.length >= KeyboardWedgeScanner.MIN_LENGTH) {
-          e.preventDefault(); // don't let it submit a form
-          this.handlers.forEach((h) => h(code));
+    // Capture phase: this runs before the focused field sees the key,
+    // and preventDefault here stops the character being inserted at
+    // all. Without it the scanner types its 13 digits straight into
+    // whatever input has the cursor — scanning while a field is
+    // focused filled the field instead of the cart.
+    //
+    // The first character of a burst is unavoidably ambiguous: at that
+    // instant a scanner and a person are indistinguishable, so it is
+    // allowed through and its position remembered. From the second
+    // character on the gap gives the scanner away and the rest are
+    // suppressed. If the burst completes as a scan, that one leaked
+    // character is removed again, so the field ends up untouched.
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        const now = Date.now();
+        const fresh = now - this.lastKeyAt > KeyboardWedgeScanner.BURST_MS;
+        if (fresh) {
+          this.buffer = '';
+          this.leak = null;
         }
-        return;
-      }
+        this.lastKeyAt = now;
 
-      if (e.key.length === 1) this.buffer += e.key;
-    });
+        if (e.key === 'Enter') {
+          const code = this.buffer.trim();
+          this.buffer = '';
+          if (code.length >= KeyboardWedgeScanner.MIN_LENGTH) {
+            e.preventDefault(); // don't let it submit a form
+            this.undoLeak();
+            this.handlers.forEach((h) => h(code));
+          }
+          this.leak = null;
+          return;
+        }
+
+        if (e.key.length !== 1) return;
+
+        if (fresh) {
+          if (isEditable(e.target)) {
+            const el = e.target;
+            this.leak = {
+              el,
+              at: el.selectionStart ?? el.value.length,
+              ch: e.key,
+            };
+          }
+        } else {
+          e.preventDefault();
+        }
+
+        this.buffer += e.key;
+      },
+      { capture: true }
+    );
+  }
+
+  /** Remove the one character that was let through before we knew. */
+  private undoLeak() {
+    const leak = this.leak;
+    this.leak = null;
+    if (!leak) return;
+    const { el, at, ch } = leak;
+    if (!el.isConnected) return;
+    if (el.value[at] !== ch) return; // the field moved on; leave it alone
+    setNativeValue(el, el.value.slice(0, at) + el.value.slice(at + 1));
+    try {
+      el.setSelectionRange(at, at);
+    } catch {
+      /* number inputs refuse setSelectionRange; harmless */
+    }
   }
 
   onScan(handler: (barcode: string) => void) {

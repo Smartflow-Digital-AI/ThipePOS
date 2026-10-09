@@ -1322,6 +1322,25 @@ export const usePos = create<PosState>()(
     {
       name: 'beautypos-v1',
       storage: createJSONStorage(() => localStorage),
+      // v1 persisted the whole catalogue, and a persisted value wins
+      // over the compiled default forever. So a browser that ran this
+      // app before a product existed keeps the old shelf, and the new
+      // barcode scans as "Unknown barcode" even though the database
+      // has it. Bumping the version drops the stored catalogue once:
+      // the compiled shelf applies immediately and CatalogueSync
+      // replaces it from Postgres a moment later. Sales, sessions,
+      // stock movements and loyalty are deliberately untouched —
+      // only the shelf is rebuilt, because only the shelf has an
+      // authoritative copy somewhere else.
+      version: 2,
+      migrate: (persisted, from) => {
+        if (!persisted || typeof persisted !== 'object') return persisted;
+        if (from < 2) {
+          const { products: _stale, ...rest } = persisted as Record<string, unknown>;
+          return rest;
+        }
+        return persisted;
+      },
       partialize: (s) => ({
         staff: s.staff,
         surface: s.surface,

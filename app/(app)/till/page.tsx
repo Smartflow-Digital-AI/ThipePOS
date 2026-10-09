@@ -38,11 +38,16 @@ export default function TillPage() {
   useEffect(() => {
     return hw.scanner.onScan((barcode) => {
       const found = addByBarcode(barcode);
-      setToast({
-        text: found ? `Added ${found.name}` : `Unknown barcode ${barcode}`,
-        ok: Boolean(found),
-      });
-      setTimeout(() => setToast(null), 1600);
+      // A failed scan says what actually arrived and how many digits,
+      // because the usual causes are invisible otherwise: a scanner
+      // adding a prefix, a scanner set to Code-39 so it drops the
+      // leading digit, or a shelf that never loaded. The shelf count
+      // separates "wrong code" from "no catalogue" at a glance.
+      const text = found
+        ? `Added ${found.name}`
+        : `Unknown barcode ${barcode} · ${barcode.length} digits · ${products.length} on shelf`;
+      setToast({ text, ok: Boolean(found) });
+      setTimeout(() => setToast(null), found ? 1600 : 4000);
     });
   }, [hw, addByBarcode]);
 
