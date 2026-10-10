@@ -1,0 +1,15 @@
+{
+  "name": "beautypos-print-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local ESC/POS print + cash drawer service for BeautyPOS. Stdlib only, no dependencies.",
+  "main": "print-bridge.mjs",
+  "scripts": {
+    "start": "node print-bridge.mjs",
+    "test-print": "node test-print.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

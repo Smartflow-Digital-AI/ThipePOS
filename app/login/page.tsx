@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { Delete, Sparkles, Building2 } from 'lucide-react';
 import { usePos } from '@/lib/store';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
-import { isConnected } from '@/lib/supabase/auth';
+import { currentClaims } from '@/lib/supabase/auth';
 import { ConnectTill } from '@/components/pos/ConnectTill';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { TILLS, STORE, STAFF } from '@/lib/data/seed';
@@ -35,14 +35,28 @@ export default function LoginPage() {
   const [connected, setConnected] = useState<boolean | null>(
     isSupabaseConfigured ? null : true
   );
+  // When the till account names its own till, this machine is that
+  // till and the picker goes away. Only an unclaimed setup (no
+  // database, or a till account without till_id) still chooses.
+  const [claimedTill, setClaimedTill] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     let alive = true;
-    void isConnected().then((ok) => alive && setConnected(ok));
+    void currentClaims().then((c) => {
+      if (!alive) return;
+      setConnected(Boolean(c?.storeId && c.posRole));
+      if (c?.tillId) {
+        setClaimedTill(c.tillId);
+        // Correct a browser that was pointed at the wrong till before
+        // the account started naming one.
+        if (usePos.getState().tillId !== c.tillId) setTill(c.tillId);
+      }
+    });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [setTill]);
 
   const press = useCallback((d: string) => {
     setError('');
@@ -108,21 +122,28 @@ export default function LoginPage() {
           <p className="text-sm text-dim mt-1">Enter your PIN to open the till</p>
         </div>
 
-        <div className="flex gap-2 mb-7">
-          {TILLS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTill(t.id)}
-              className={`flex-1 h-11 rounded-lg text-sm font-medium border transition-colors ${
-                tillId === t.id
-                  ? 'bg-brand-soft border-brand-line text-brand'
-                  : 'bg-panel border-line text-dim hover:text-ink'
-              }`}
-            >
-              {t.name}
-            </button>
-          ))}
-        </div>
+        {claimedTill ? (
+          <div className="mb-7 h-11 rounded-lg border border-brand-line bg-brand-soft text-brand
+                          flex items-center justify-center text-sm font-medium">
+            {TILLS.find((t) => t.id === claimedTill)?.name ?? 'This till'}
+          </div>
+        ) : (
+          <div className="flex gap-2 mb-7">
+            {TILLS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTill(t.id)}
+                className={`flex-1 h-11 rounded-lg text-sm font-medium border transition-colors ${
+                  tillId === t.id
+                    ? 'bg-brand-soft border-brand-line text-brand'
+                    : 'bg-panel border-line text-dim hover:text-ink'
+                }`}
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="flex justify-center gap-3 mb-2" aria-hidden>
           {[0, 1, 2, 3].map((i) => (

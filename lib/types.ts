@@ -229,6 +229,23 @@ export function voucherIsUsable(v: CreditNote): boolean {
 // a POS — never do arithmetic on a float you will print.
 // ─────────────────────────────────────────────────────────────
 
+/** The timestamp as it appears on a slip: dd/mm/yyyy HH:mm, 24-hour,
+ *  in the till's own timezone.
+ *
+ *  Built by hand rather than through toLocaleString because en-ZA
+ *  formats dates as yyyy/mm/dd, which is not what anyone in a South
+ *  African shop reads off a receipt. Short enough to sit beside the
+ *  receipt number on one 42-column line, which "10 Oct 2026, 01:57"
+ *  was not — it wrapped, and took the whole slip with it. */
+export function receiptStamp(when: string | Date): string {
+  const d = new Date(when);
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ` +
+    `${p2(d.getHours())}:${p2(d.getMinutes())}`
+  );
+}
+
 export const VAT_RATE = 0.15; // South African VAT
 
 /** Format cents as R1 234.50 */

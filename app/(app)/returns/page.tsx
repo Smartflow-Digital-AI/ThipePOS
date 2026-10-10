@@ -12,6 +12,7 @@ import {
   money, effectiveUnitPrice, returnableQty, refundedQty, saleStatus,
   daysSince, RETURN_REASONS, RETURN_WINDOW_DAYS,
   type Refund, type RefundMethod, type Sale, type Override, type CreditNote,
+  receiptStamp,
 } from '@/lib/types';
 import { Page, Table, Empty } from '@/components/ui/Page';
 import { Modal } from '@/components/ui/Modal';
@@ -131,6 +132,8 @@ function ReturnBuilder({ sale, onBack }: { sale: Sale; onBack: () => void }) {
   const [method, setMethod] = useState<RefundMethod>('cash');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Hardware trouble after the refund is recorded: reported, not fatal.
+  const [hwNote, setHwNote] = useState('');
   const [done, setDone] = useState<{ refund: Refund; voucher: CreditNote | null } | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
   const [approval, setApproval] = useState<Override | null>(null);
@@ -204,9 +207,7 @@ function ReturnBuilder({ sale, onBack }: { sale: Sale; onBack: () => void }) {
     sale_number: r.refund_number,
     till_name: TILLS.find((t) => t.id === r.till_id)?.name ?? 'Till',
     cashier_name: r.staff_name,
-    datetime: new Date(r.created_at).toLocaleString('en-ZA', {
-      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    }),
+    datetime: receiptStamp(r.created_at),
     lines: r.lines.map((l) => ({
       name: `${l.name} ${l.variant}`.trim(),
       qty: l.qty,
@@ -275,8 +276,23 @@ function ReturnBuilder({ sale, onBack }: { sale: Sale; onBack: () => void }) {
       }
 
       const { refund, voucher } = result;
-      if (method === 'cash') await hw.drawer.open(`Refund ${refund.refund_number}`);
-      await hw.printer.print(toReceipt(refund, voucher));
+      // The refund is already recorded. Hardware trouble must not stop
+      // the credit note appearing on screen — especially when it
+      // carries a voucher code the customer is waiting for.
+      if (method === 'cash') {
+        try {
+          await hw.drawer.open(`Refund ${refund.refund_number}`);
+        } catch (e) {
+          setHwNote((e as Error).message);
+        }
+      }
+      const printed = await hw.printer.print(toReceipt(refund, voucher));
+      if (!printed.ok) {
+        setHwNote(
+          (printed.error ?? 'Receipt did not print.') +
+            (voucher ? ` Write the voucher code down: ${voucher.code}` : '')
+        );
+      }
       setDone(result);
     } finally {
       setBusy(false);
@@ -537,6 +553,16 @@ function ReturnBuilder({ sale, onBack }: { sale: Sale; onBack: () => void }) {
                 </div>
               )}
             </div>
+
+            {hwNote && (
+              <div className="mb-4 px-3 py-2.5 rounded bg-warn-soft border border-warn/25 text-warn text-sm">
+                <div className="font-medium">Hardware did not respond</div>
+                <div className="text-2xs mt-0.5 opacity-90">{hwNote}</div>
+                <div className="text-2xs mt-1 opacity-90">
+                  The refund is recorded as {done.refund.refund_number}.
+                </div>
+              </div>
+            )}
 
             {/* The voucher IS the refund. Say the code out loud on screen
                 so the cashier checks the slip printed before handing it over. */}

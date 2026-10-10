@@ -12,7 +12,7 @@ import { Receipt } from '@/components/pos/Receipt';
 import { usePos } from '@/lib/store';
 import { hardware, isMockDevice } from '@/lib/hardware';
 import type { ReaderState, ReceiptData } from '@/lib/hardware/types';
-import { cartTotals, money, type PaymentPart, type Sale } from '@/lib/types';
+import { cartTotals, money, receiptStamp, type PaymentPart, type Sale } from '@/lib/types';
 import { STORE, TILLS } from '@/lib/data/seed';
 
 type Step = 'method' | 'voucher' | 'cash' | 'card' | 'split_card' | 'split_cash' | 'done';
@@ -43,6 +43,8 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
   const [readerState, setReaderState] = useState<ReaderState>({ phase: 'idle' });
   const [sale, setSale] = useState<Sale | null>(null);
   const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState('');
+  const [drawerError, setDrawerError] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [error, setError] = useState('');
 
@@ -58,6 +60,8 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
       setStep('method');
       setCashCents(0);
       setConfirmOver(false);
+      setPrintError('');
+      setDrawerError('');
       setVoucherInput('');
       setVoucherCode('');
       setVoucherPart(0);
@@ -111,14 +115,23 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
       setSale(s);
       setStep('done');
 
+      // Past this point the sale is recorded and the money has
+      // changed hands. A drawer that jams or a printer that is off is
+      // a hardware problem to report, never a reason to throw out of
+      // this handler and leave the cashier on a blank screen.
       if (parts.some((p) => p.method === 'cash')) {
-        await hw.drawer.open(`Sale ${s.sale_number}`);
-        setDrawerOpen(true);
+        try {
+          await hw.drawer.open(`Sale ${s.sale_number}`);
+          setDrawerOpen(true);
+        } catch (e) {
+          setDrawerError((e as Error).message);
+        }
       }
 
       setPrinting(true);
-      await hw.printer.print(toReceipt(s));
+      const printed = await hw.printer.print(toReceipt(s));
       setPrinting(false);
+      setPrintError(printed.ok ? '' : printed.error ?? 'Receipt did not print.');
     },
     [completeSale, hw, voucherPart, voucherCode, redeemVoucher]
   );
@@ -218,6 +231,17 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
     setStep('method');
   };
 
+  // A slip that did not print is the commonest hardware failure in a
+  // shop, and the sale is already banked, so the fix is a retry — not
+  // a voided sale and not a re-rung basket.
+  const reprint = async () => {
+    if (!sale) return;
+    setPrinting(true);
+    const r = await hardware().printer.print(toReceipt(sale));
+    setPrinting(false);
+    setPrintError(r.ok ? '' : r.error ?? 'Receipt did not print.');
+  };
+
   const toReceipt = (s: Sale): ReceiptData => ({
     store_name: STORE.name,
     store_address: STORE.address,
@@ -226,10 +250,7 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
     sale_number: s.sale_number,
     till_name: TILLS.find((t) => t.id === tillId)?.name ?? 'Till',
     cashier_name: s.cashier_name,
-    datetime: new Date(s.created_at).toLocaleString('en-ZA', {
-      day: '2-digit', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    }),
+    datetime: receiptStamp(s.created_at),
     lines: s.lines.map((l) => ({
       name: `${l.name} ${l.variant}`.trim(),
       qty: l.qty,
@@ -556,15 +577,39 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
             </div>
           )}
 
-          <div className="mb-3 flex items-center gap-2 text-sm text-dim">
+          {drawerError && (
+            <div className="mb-3 px-3 py-2.5 rounded bg-warn-soft border border-warn/25 text-warn text-sm">
+              <div className="font-medium">Cash drawer did not open</div>
+              <div className="text-2xs mt-0.5 opacity-90">{drawerError}</div>
+              <div className="text-2xs mt-1 opacity-90">
+                The sale is recorded. Open the drawer with the key and carry on.
+              </div>
+            </div>
+          )}
+
+          <div className="mb-3">
             {printing ? (
-              <>
+              <div className="flex items-center gap-2 text-sm text-dim">
                 <Loader2 size={14} className="animate-spin" /> Printing receipt…
-              </>
+              </div>
+            ) : printError ? (
+              <div className="px-3 py-2.5 rounded bg-bad-soft border border-bad/25 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-bad">Receipt did not print</span>
+                  <button className="text-2xs text-brand hover:underline" onClick={() => void reprint()}>
+                    Try again
+                  </button>
+                </div>
+                <div className="text-2xs mt-0.5 text-bad/90">{printError}</div>
+                <div className="text-2xs mt-1 text-dim">
+                  The sale is recorded as {sale.sale_number}. Email the slip below, or
+                  reprint it later from Sales.
+                </div>
+              </div>
             ) : (
-              <>
+              <div className="flex items-center gap-2 text-sm text-dim">
                 <Printer size={14} className="text-ok" /> Receipt printed
-              </>
+              </div>
             )}
           </div>
 

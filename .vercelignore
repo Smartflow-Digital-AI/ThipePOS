@@ -11,3 +11,6 @@
 *.log
 /_to_delete
 /CREDENTIALS.local.md
+# The print bridge runs on the till PC, not on Vercel. Nothing in the
+# app imports it, so shipping it would only publish the drawer token.
+/bridge

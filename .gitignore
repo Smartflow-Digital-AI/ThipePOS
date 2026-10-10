@@ -8,3 +8,7 @@ out
 
 # Local credentials — never commit
 CREDENTIALS.local.md
+
+# Print bridge — per-till config, holds the drawer token
+bridge/bridge.config.json
+bridge/.token.tmp

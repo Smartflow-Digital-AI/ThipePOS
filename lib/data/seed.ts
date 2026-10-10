@@ -3,12 +3,18 @@ import type { Product, Staff, Store, Till } from '@/lib/types';
 // Mirrors supabase/migrations/0002_seed.sql exactly, so the app runs
 // with zero setup and behaves identically once Supabase is connected.
 
+// Real trading details, pending from the client. Deliberately blank
+// rather than plausible-looking: '4180299301' was an invented VAT
+// number, and it printed on slips headed TAX INVOICE. A fabricated
+// VAT number on a tax invoice is a real problem, not a placeholder.
+// Blank is honest — the slip downgrades itself to SALES RECEIPT and
+// says "(not a tax invoice)" until these are filled in.
 export const STORE: Store = {
   id: '11111111-1111-1111-1111-111111111111',
-  name: 'Glow Beauty Supply',
-  address: 'Shop 14, Maponya Mall, Soweto, 1804',
-  phone: '011 938 4400',
-  vat_number: '4180299301',
+  name: 'Thipe Blinggirl',
+  address: '',
+  phone: '',
+  vat_number: '',
 };
 
 export const TILLS: Till[] = [

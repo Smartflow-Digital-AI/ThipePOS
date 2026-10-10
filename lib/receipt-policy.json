@@ -1,0 +1,14 @@
+{
+  "_comment": "The single source of truth for what a slip SAYS. Read by components/pos/Receipt.tsx (screen + browser print) and by bridge/escpos.mjs (thermal printer). Two renderers printing different return windows is a dispute at the counter, so the words live here and nowhere else. test/receipt-parity.mjs fails the build if the numbers drift from lib/types.ts.",
+  "vatRatePct": 15,
+  "returnDays": 7,
+  "returnNote": "Unopened products only.",
+  "thankYou": "Thank you for shopping at",
+  "creditKeepNote": "Keep this credit note as proof of refund.",
+  "cardRefundNote": "Card refunds can take 3-5 working days to reflect.",
+  "voucherRedeemNote": "Present this slip to redeem.",
+  "voucherSafeNote": "Keep it safe - it cannot be replaced if lost.",
+  "pointsPerVoucher": 100,
+  "voucherRandPerRedemption": 50,
+  "returnLine": "Returns within {days} days with this slip."
+}

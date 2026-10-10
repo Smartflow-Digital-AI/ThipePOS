@@ -35,6 +35,13 @@ export interface Claims {
   email: string | null;
   storeId: string | null;
   posRole: PosRole | null;
+  /** Which counter this machine IS. Only till accounts carry it.
+   *  A shop with three tills cannot leave this to a button on the
+   *  login screen: one mistaken tap and a cashier's takings land on
+   *  another till's cash-up, and nobody notices until the counts
+   *  disagree at close. The account the machine was connected with
+   *  decides it, once, at setup. */
+  tillId: string | null;
 }
 
 function readClaims(session: { access_token: string; user: { id: string; email?: string | null } } | null): Claims | null {
@@ -53,6 +60,7 @@ function readClaims(session: { access_token: string; user: { id: string; email?:
     email: session.user.email ?? null,
     storeId: (meta.store_id as string) ?? null,
     posRole: (meta.pos_role as PosRole) ?? null,
+    tillId: (meta.till_id as string) ?? null,
   };
 }
 

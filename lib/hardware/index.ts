@@ -50,6 +50,7 @@ const OVERRIDES: Record<DeviceKind, string | undefined> = {
 };
 
 const PRINT_BRIDGE = process.env.NEXT_PUBLIC_PRINT_BRIDGE_URL || '';
+const PRINT_TOKEN = process.env.NEXT_PUBLIC_PRINT_BRIDGE_TOKEN || '';
 
 function resolve(kind: DeviceKind): HardwareMode {
   const o = OVERRIDES[kind];
@@ -64,8 +65,13 @@ export function deviceMode(kind: DeviceKind): HardwareMode {
   // never opens: the kick is an ESC/POS command down the printer's
   // cable. Report the truth rather than letting a cashier wait for a
   // drawer that was never going to move.
-  if (kind === 'drawer' && resolve('drawer') === 'live' && resolve('printer') !== 'live') {
-    return 'mock';
+  if (kind === 'drawer' && resolve('drawer') === 'live') {
+    if (resolve('printer') !== 'live') return 'mock';
+    // And with no bridge the printer falls back to the browser's
+    // print dialog, which has no way to send the kick bytes at all.
+    // A live drawer pointed at an empty URL would POST to the page
+    // itself and report success, so it is mock until a bridge exists.
+    if (!PRINT_BRIDGE) return 'mock';
   }
   return resolve(kind);
 }
@@ -85,9 +91,15 @@ export function hardware(): HardwareBundle {
       : 'mock',
     scanner: deviceMode('scanner') === 'live' ? new KeyboardWedgeScanner() : new MockScanner(),
     printer: printerLive
-      ? new ThermalPrinter({ bridgeUrl: PRINT_BRIDGE || undefined })
+      ? new ThermalPrinter({
+          bridgeUrl: PRINT_BRIDGE || undefined,
+          token: PRINT_TOKEN || undefined,
+        })
       : new MockPrinter(),
-    drawer: deviceMode('drawer') === 'live' ? new PrinterKickDrawer(PRINT_BRIDGE) : new MockDrawer(),
+    drawer:
+      deviceMode('drawer') === 'live'
+        ? new PrinterKickDrawer(PRINT_BRIDGE, PRINT_TOKEN || undefined)
+        : new MockDrawer(),
     reader: deviceMode('reader') === 'live' ? new YocoCardReader() : new MockCardReader(),
   };
 

@@ -176,30 +176,59 @@ export class ThermalPrinter implements ReceiptPrinter {
 
   constructor(
     private opts: {
-      /** e.g. http://localhost:8080/print — your local print bridge */
+      /** e.g. http://localhost:8080/print — the local print bridge */
       bridgeUrl?: string;
+      /** Must match the bridge's own token. */
+      token?: string;
     } = {}
   ) {}
 
   async print(receipt: ReceiptData): Promise<PrintResult> {
-    // ─ Option (a): network / bridge ─────────────────────────────
+    // ─ Option (a): the local print bridge ───────────────────────
     if (this.opts.bridgeUrl) {
+      // A till cannot hang on a sale. If the bridge does not answer
+      // the cashier needs the slip to fail fast and the sale to stand,
+      // because the money has already changed hands.
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
       try {
         const res = await fetch(this.opts.bridgeUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(this.opts.token ? { 'X-Bridge-Token': this.opts.token } : {}),
+          },
           body: JSON.stringify({ type: 'receipt', receipt }),
+          signal: ctl.signal,
         });
-        if (!res.ok) return { ok: false, error: `Printer responded ${res.status}` };
+        if (!res.ok) {
+          // The bridge reports why in plain words. Pass that through
+          // rather than a status code a cashier cannot act on.
+          const said = await res.json().catch(() => null);
+          return {
+            ok: false,
+            error: said?.error ?? `Printer service responded ${res.status}`,
+          };
+        }
         return { ok: true };
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        const err = e as Error;
+        return {
+          ok: false,
+          error:
+            err.name === 'AbortError'
+              ? 'Printer did not respond in time.'
+              : 'Print service is not running on this till.',
+        };
+      } finally {
+        clearTimeout(timer);
       }
     }
 
     // ─ Option (b): browser print of the 80mm receipt node ────────
     // The receipt is already rendered off-screen by <ReceiptSheet/>
     // with id="receipt-print-root" and an @media print stylesheet.
+    // Note this route cannot open the cash drawer — see index.ts.
     if (typeof window !== 'undefined') {
       window.print();
       return { ok: true };
@@ -224,17 +253,47 @@ export class PrinterKickDrawer implements CashDrawer {
   readonly mode = 'live' as const;
   private _open = false;
 
-  constructor(private bridgeUrl: string) {}
+  constructor(
+    private bridgeUrl: string,
+    private token?: string
+  ) {}
 
   async open(reason: string) {
     // ESC p 0 25 250 — pin 2, 25ms on, 250ms off
     const kick = [0x1b, 0x70, 0x00, 0x19, 0xfa];
-    await fetch(this.bridgeUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'raw', bytes: kick, reason }),
-    });
-    this._open = true;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 5000);
+    try {
+      const res = await fetch(this.bridgeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.token ? { 'X-Bridge-Token': this.token } : {}),
+        },
+        body: JSON.stringify({ type: 'raw', bytes: kick, reason }),
+        signal: ctl.signal,
+      });
+      // This used to set _open unconditionally, so a drawer that never
+      // moved was recorded as opened and the cashier was told to take
+      // cash from a locked box. The flag now follows the hardware.
+      this._open = res.ok;
+      if (!res.ok) {
+        const said = await res.json().catch(() => null);
+        throw new Error(said?.error ?? `Drawer did not open (${res.status})`);
+      }
+    } catch (e) {
+      this._open = false;
+      const err = e as Error;
+      throw new Error(
+        err.name === 'AbortError'
+          ? 'Drawer did not respond. Open it with the key.'
+          : err.message.startsWith('Drawer did not open')
+          ? err.message
+          : 'Print service is not running, so the drawer cannot open. Use the key.'
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   isOpen() {

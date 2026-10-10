@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy to bridge.config.json and edit. Delete the keys you do not use.",
+
+  "port": 8080,
+  "columns": 48,
+
+  "transport": "auto",
+
+  "_tcp": "Network printer. Most Epson TM and Xprinter models with an Ethernet port. Find the IP by holding FEED while powering on - it prints its own settings.",
+  "host": "",
+  "printerPort": 9100,
+
+  "_share": "Windows USB printer. Install its driver, then Printer properties > Sharing > Share this printer, name it POS80 (no spaces).",
+  "share": "",
+
+  "_device": "Linux or macOS USB printer.",
+  "device": "",
+
+  "_token": "Must match NEXT_PUBLIC_PRINT_BRIDGE_TOKEN in the app. Stops a stray web page opening the cash drawer.",
+  "token": "change-me",
+
+  "_origins": "Which web origins may print. Add your Vercel URL.",
+  "origins": ["http://localhost:3000"]
+}
