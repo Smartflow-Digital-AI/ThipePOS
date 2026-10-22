@@ -7,7 +7,8 @@
   "main": "print-bridge.mjs",
   "scripts": {
     "start": "node print-bridge.mjs",
-    "test-print": "node test-print.mjs"
+    "test-print": "node test-print.mjs",
+    "burn-in": "node test-print.mjs 25"
   },
   "engines": {
     "node": ">=18"

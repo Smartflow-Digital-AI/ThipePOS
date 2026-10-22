@@ -11,8 +11,8 @@ only four devices, and three of them are dumber than they look.
 
 | Item | What to get | Rough cost |
 |---|---|---|
-| **PC** | Mini PC — Intel N100, 8GB RAM, 256GB SSD. Beelink / Mele / a local white-box. | R3 000 – R4 500 |
-| **Monitor** | 15–19" touchscreen. Non-touch + mouse works and is cheaper. | R2 000 – R4 500 |
+| **PC** | **Laptop**, Windows 11 Home, 8GB RAM, 256GB SSD. See the note below — this used to say mini PC. | R6 000 – R9 000 |
+| **Monitor** | Included with the laptop. (A mini PC needs one: R2 000 – R4 500 non-touch.) | — |
 | **Barcode scanner** | **USB, wired, 1D laser.** Zebra DS2208 or a generic. Wired, not Bluetooth. | R600 – R1 500 |
 | **Receipt printer** | 80mm thermal, **USB + auto-cutter**. Epson TM-T20III is the safe choice; Xprinter XP-80 is the budget one. | R1 500 – R3 500 |
 | **Cash drawer** | Any RJ11 drawer that plugs into the printer. | R700 – R1 200 |
@@ -27,9 +27,20 @@ only four devices, and three of them are dumber than they look.
 
 ---
 
-## Answering your device question directly
+## Laptop or mini PC — revised
 
-**Use mini PCs, not tablets.** Three reasons:
+This originally said mini PC. For South Africa a laptop wins, and it is not
+about the computer: **a laptop has a battery, so it is its own UPS.** Once you
+add a monitor and a UPS to a mini PC the two cost the same, and only one of
+them keeps trading through load shedding.
+
+A mini PC is still more durable behind a counter and harder to steal, so it is
+the right answer where power is reliable. Here it is not. See `PILOT-TILL.md`.
+
+The **printer** needs a UPS either way — it has no battery, and the cash drawer
+opens through it.
+
+**Either way: not tablets.** Three reasons:
 
 1. **Barcode scanners are USB keyboards.** On a mini PC it just works. On Android
    and iPad you fight with OTG adapters and Bluetooth HID pairing that drops.

@@ -272,13 +272,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (body.type === 'test') {
+      // drawer defaults on: one test slip should prove both devices.
+      // A burn-in run turns it off — nobody needs a solenoid firing
+      // twenty-five times to find out whether a cutter is tired.
+      const kick = body.drawer !== false;
       await enqueue(
         Buffer.concat([
-          renderTest({ transport: cfg.transport || 'none', target: target() }, cfg.columns),
-          Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa]), // prove the drawer too
+          renderTest(
+            { transport: cfg.transport || 'none', target: target() },
+            cfg.columns,
+            body.label ?? null,
+            kick
+          ),
+          ...(kick ? [Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa])] : []),
         ])
       );
-      console.log('[bridge] test slip printed');
+      console.log(`[bridge] test slip printed${body.label ? ` (${body.label})` : ''}`);
       return json(res, 200, { ok: true });
     }
 

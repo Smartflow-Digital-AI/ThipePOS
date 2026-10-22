@@ -46,15 +46,18 @@ Printer properties → Sharing → *Share this printer*, name it `POS80`
 { "transport": "device", "device": "/dev/usb/lp0" }
 ```
 
-### 2. Start it
+### 2. Install it
 
-Double-click `start-bridge.bat`, or:
-
-```
-node print-bridge.mjs
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
 ```
 
-Leave the window open while the shop is trading.
+Installs to `C:\BeautyPOS\bridge`, registers a Scheduled Task that starts
+the bridge hidden at logon and restarts it if it dies, then prints a test
+slip. No admin rights needed.
+
+For a quick run without installing, double-click `start-bridge.bat` and
+leave the window open.
 
 ### 3. Print a test slip
 

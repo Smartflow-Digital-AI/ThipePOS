@@ -228,6 +228,21 @@ export class Escpos {
     return this;
   }
 
+  /** A solid bar, for testing a print head.
+   *
+   *  Emitted as raw CP437 0xDB bytes rather than through text(),
+   *  because ascii() strips everything outside printable ASCII and a
+   *  solid block is precisely the character that is not in it. ESC t 0
+   *  pins the code page first so 0xDB really is a block and not an
+   *  accented letter from whatever page the printer was left on. */
+  solid(rows = 1) {
+    this.raw(ESC, 0x74, 0x00); // code page 0 = PC437
+    for (let i = 0; i < rows; i++) {
+      this.raw(new Array(this.width()).fill(0xdb)).raw(0x0a);
+    }
+    return this;
+  }
+
   /** A table row of fixed-width cells: [text, width, 'l'|'r'].
    *  Receipt columns only line up if every row agrees on the widths,
    *  which pair() cannot express for three or four columns. */
@@ -456,7 +471,7 @@ export function renderReceipt(r, columns = COLUMNS_80MM) {
   return p.done();
 }
 
-export function renderTest(info, columns = COLUMNS_80MM) {
+export function renderTest(info, columns = COLUMNS_80MM, label = null, kick = true) {
   const p = new Escpos(columns);
   p.init().align(0).bigIfItFits('BeautyPOS');
   p.centre('print bridge test').feed(1);
@@ -464,13 +479,22 @@ export function renderTest(info, columns = COLUMNS_80MM) {
   p.pair('Target', info.target);
   p.pair('Columns', String(columns));
   p.pair('Time', new Date().toLocaleString('en-ZA'));
+  if (label) p.pair('Run', label);
   p.rule('=');
   p.line('Width check - the bar below should');
   p.line('exactly reach both paper edges:');
   p.rule('#');
   p.feed(1);
+  // A solid block is the print-head test. On a worn head the dead
+  // dots show as vertical white lines straight through it, which a
+  // page of text hides.
+  p.line('Print head - look for WHITE VERTICAL');
+  p.line('lines through the block below:');
+  p.solid(4);
+  p.feed(1);
   p.line('If the bar wraps onto a second line,');
   p.line('set COLUMNS to 32 for 58mm paper.');
-  p.feed(1).centre('Drawer should have opened.').cut();
+  if (kick) p.feed(1).centre('Drawer should have opened.');
+  p.cut();
   return p.done();
 }

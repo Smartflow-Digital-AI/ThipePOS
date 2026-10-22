@@ -14,6 +14,8 @@ import { hardware, isMockDevice } from '@/lib/hardware';
 import type { ReaderState, ReceiptData } from '@/lib/hardware/types';
 import { cartTotals, money, receiptStamp, type PaymentPart, type Sale } from '@/lib/types';
 import { STORE, TILLS } from '@/lib/data/seed';
+import { publish } from '@/lib/customer-display';
+import { holdPaidScreen } from '@/components/pos/CustomerDisplayBridge';
 
 type Step = 'method' | 'voucher' | 'cash' | 'card' | 'split_card' | 'split_cash' | 'done';
 
@@ -114,6 +116,34 @@ export function PaymentFlow({ open, onClose }: { open: boolean; onClose: () => v
       const s = completeSale(parts, cashReceived);
       setSale(s);
       setStep('done');
+
+      // The shopper's screen, before anything else. Change due is the
+      // one number they are standing there waiting for, and they
+      // should not have to read it upside down off the cashier's.
+      // holdPaidScreen keeps it up after the cart empties, which
+      // happens a few milliseconds from now.
+      holdPaidScreen();
+      publish({
+        phase: 'paid',
+        store_name: STORE.name,
+        lines: s.lines.map((l) => ({
+          name: `${l.name} ${l.variant}`.trim(),
+          qty: l.qty,
+          unit_price: l.unit_price,
+          line_total: l.unit_price * l.qty - l.discount,
+        })),
+        subtotal: s.subtotal,
+        discount_total: s.discount_total,
+        tax_total: s.tax_total,
+        total: s.total,
+        sale_number: s.sale_number,
+        cash_received: s.cash_received,
+        change_given: s.change_given,
+        points_earned: s.points_earned,
+        points_balance: s.customer_phone
+          ? usePos.getState().loyaltyMembers.find((m) => m.phone === s.customer_phone)?.points
+          : undefined,
+      });
 
       // Past this point the sale is recorded and the money has
       // changed hands. A drawer that jams or a printer that is off is

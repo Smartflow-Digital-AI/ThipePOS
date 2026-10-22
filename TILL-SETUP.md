@@ -99,10 +99,11 @@ You want `True` and `POS80`.
 
 ### Bridge (steps 7–9)
 
-**7. Copy the `bridge` folder** from the stick to the laptop. Somewhere
-stable — `C:\BeautyPOS\bridge` is better than Downloads, which people empty.
+**7. Copy the `bridge` folder** from the stick to the laptop — anywhere;
+the installer moves it to `C:\BeautyPOS\bridge`.
 
-**8. Check `bridge.config.json`:**
+**8. Check `bridge.config.json`** before installing. One line per machine
+is all that changes, and usually nothing does:
 
 ```json
 {
@@ -110,31 +111,41 @@ stable — `C:\BeautyPOS\bridge` is better than Downloads, which people empty.
   "columns": 42,
   "transport": "share",
   "share": "\\\\localhost\\POS80",
-  "token": "<same token as NEXT_PUBLIC_PRINT_BRIDGE_TOKEN>",
-  "origins": ["https://your-app.vercel.app"]
+  "token": "<same as NEXT_PUBLIC_PRINT_BRIDGE_TOKEN>",
+  "origins": ["https://thipe-pos.vercel.app"]
 }
 ```
 
-`columns` is **42** for the TM-T88V. 48 is the common figure for 80mm paper
+`columns` is **42** for the TM-T88V. 48 is the usual figure for 80mm paper
 and it is wrong for this model — every line wraps and amounts split across
-rows.
+rows. Origins take **no trailing slash**; one will never match.
 
-**9. Make it start with Windows.**
-`Win + R` → `shell:startup` → put a shortcut to `start-bridge.bat` in there.
+**9. Run the installer** — right-click the `bridge` folder → *Open in
+Terminal*, then:
 
-If the bridge is not running, nothing prints and no drawer opens. Do not
-rely on anyone remembering to start it.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+```
+
+It checks Node is present, installs to `C:\BeautyPOS\bridge`, verifies the
+printer really is shared under the name in your config, registers a
+Scheduled Task, starts the bridge hidden, and prints a test slip.
+
+No administrator rights needed. The task runs **as the logged-in user**,
+on purpose: a task running as SYSTEM has no printer connections, and
+`\\localhost\POS80` is a per-user resource.
+
+Why a Scheduled Task and not a Startup shortcut: it **restarts the bridge
+if it dies**, and it runs with no console window. A black terminal on a
+shop counter gets closed by someone tidying up, and then nothing prints.
 
 ### Test the hardware (step 10)
 
-Open two windows:
+The installer already printed a test slip. If you need another:
 
 ```
 cd C:\BeautyPOS\bridge
-node print-bridge.mjs          <- leave this running
-
-cd C:\BeautyPOS\bridge
-npm run test-print             <- in the second window
+npm run test-print
 ```
 
 Check the slip:

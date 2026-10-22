@@ -14,6 +14,7 @@ import { Modal } from '@/components/ui/Modal';
 import { MoneyInput } from '@/components/ui/MoneyInput';
 import { CloseTillButton } from '@/components/pos/CloseTill';
 import { LoyaltyCapture } from '@/components/pos/LoyaltyCapture';
+import { CustomerDisplayBridge } from '@/components/pos/CustomerDisplayBridge';
 
 export default function TillPage() {
   const products = usePos((s) => s.products);
@@ -251,7 +252,11 @@ export default function TillPage() {
   );
 
   return (
-    <div className="h-full flex">
+    <>
+      {/* Publishes the basket to the HK718 front screen. Till only:
+          the office must not redraw a shopper's display. */}
+      <CustomerDisplayBridge />
+      <div className="h-full flex">
       {/* ══ Catalogue ═══════════════════════════════════════════ */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex-none px-3 sm:px-5 pt-3 sm:pt-4 pb-3 flex gap-2">
@@ -381,6 +386,7 @@ export default function TillPage() {
       <PaymentFlow open={payOpen} onClose={() => setPayOpen(false)} />
 
     </div>
+    </>
   );
 }
 
