@@ -1,4 +1,4 @@
-# Deploying Thipe BeautyPOS
+# Deploying Thipe BeautyPOS Steps
 
 ## Security model
 
